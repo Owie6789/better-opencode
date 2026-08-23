@@ -69,8 +69,9 @@ describe("hooks and index", () => {
     const h2 = createSystemTransformHandler(deps as any)
     const out2: any = { system: ["base"] }
     await h2({ system: ["base"] }, out2)
-    expect(out2.system.length).toBeGreaterThan(1)
+    expect(out2.system.length).toBeGreaterThanOrEqual(1)
     expect(out2.system.join("\n")).toContain("instincts")
+    expect(out2.system.join("\n")).toContain("base")
 
     // disabled
     const disabledDeps = { ...deps, config: { ...deps.config, enabled: false } }

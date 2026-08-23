@@ -85,19 +85,49 @@ export async function hybridSearch(
   return reranked
 }
 
+let crossEncoderWarned = false
+async function tryCrossEncoderRerank(
+  query: string,
+  candidates: Array<{ chunk: Chunk; score: number }>,
+  logger: Logger,
+): Promise<Array<{ chunk: Chunk; score: number }> | null> {
+  const enabled = process.env.ENABLE_CROSS_ENCODER === "1"
+  if (!enabled) return null
+  try {
+    const rt = await import("onnxruntime-node").catch(() => null)
+    if (!rt) {
+      if (!crossEncoderWarned) {
+        logger.warn("cross-encoder requested but onnxruntime-node unavailable, using rule rerank")
+        crossEncoderWarned = true
+      }
+      return null
+    }
+    // MiniLM-L6-v2 ONNX would be loaded here from ~/.cache/better-opencode/models/
+    // Placeholder: return null to trigger fallback until model downloaded
+    void query
+    void rt
+    return null
+  } catch {
+    return null
+  }
+}
+
 async function rerank(
-  _query: string,
+  query: string,
   candidates: Array<{ chunk: Chunk; score: number }>,
   limit: number,
   logger: Logger,
 ): Promise<Array<{ chunk: Chunk; score: number }>> {
-  void logger
   if (candidates.length <= limit) return candidates
+
+  const ce = await tryCrossEncoderRerank(query, candidates, logger)
+  if (ce) return ce.slice(0, limit)
 
   const scored = candidates.map((c) => {
     const defBonus = c.chunk.kind === "definition" ? 0.02 : 0
     const lengthPenalty = c.chunk.text.length > 2000 ? -0.01 : 0
-    return { ...c, score: c.score + defBonus + lengthPenalty }
+    const queryTermBonus = c.chunk.text.toLowerCase().includes(query.toLowerCase().split(/\s+/)[0] ?? "") ? 0.01 : 0
+    return { ...c, score: c.score + defBonus + lengthPenalty + queryTermBonus }
   })
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, limit)
