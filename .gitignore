@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.cache/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+.cache/better-opencode/
+better-opencode-cache.json
