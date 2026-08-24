@@ -150,7 +150,30 @@ export function releaseLockFile(lockPath: string, ownerId: string): void {
   }
 }
 
-export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> { // NOSONAR - CAS stale takeover loop intentionally branches for timeout/retry/fsync
+function tryStaleClaim(lockPath: string, ownerId: string, staleMs: number): boolean {
+  if (!isLockStale(lockPath, staleMs)) return false
+  if (!claimStaleLock(lockPath, ownerId, staleMs)) return false
+  try {
+    return readFileSync(lockPath, "utf8") === ownerId
+  } catch {
+    return false
+  }
+}
+
+function sleepSyncMs(ms: number): void {
+  try {
+    const sab = new SharedArrayBuffer(4)
+    const arr = new Int32Array(sab)
+    Atomics.wait(arr, 0, 0, ms)
+  } catch {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      // intentional empty busy-wait
+    }
+  }
+}
+
+export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
   const existingStore = lockAsyncStorage.getStore()
   if (existingStore?.has(lockPath)) {
     return await fn()
@@ -166,18 +189,9 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): P
 
   let acquired = false
   while (!createLockFile(lockPath, ownerId)) {
-    if (isLockStale(lockPath, staleMs)) {
-      if (claimStaleLock(lockPath, ownerId, staleMs)) {
-        try {
-          if (readFileSync(lockPath, "utf8") === ownerId) {
-            acquired = true
-            break
-          }
-        } catch {
-          // lost race after claim, retry
-        }
-      }
-      continue
+    if (tryStaleClaim(lockPath, ownerId, staleMs)) {
+      acquired = true
+      break
     }
     if (Date.now() - start > timeoutMs) throw new Error(`Failed to acquire lock ${lockPath} after ${timeoutMs}ms`)
     await new Promise((r) => setTimeout(r, retryMs))
@@ -204,7 +218,7 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): P
   }
 }
 
-export function withFileLockSync<T>(lockPath: string, fn: () => T): T { // NOSONAR - sync CAS stale takeover mirrors async, intentional duplication for sync context
+export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
   const existingStore = lockAsyncStorage.getStore()
   if (existingStore?.has(lockPath)) {
     return fn()
@@ -217,31 +231,12 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T): T { // NOSON
   const staleMs = 10_000
   let acquiredSync = false
   while (!createLockFile(lockPath, ownerId)) {
-    if (isLockStale(lockPath, staleMs)) {
-      if (claimStaleLock(lockPath, ownerId, staleMs)) {
-        try {
-          if (readFileSync(lockPath, "utf8") === ownerId) {
-            acquiredSync = true
-            break
-          }
-        } catch {
-          // lost race after claim, retry
-        }
-      }
-      continue
+    if (tryStaleClaim(lockPath, ownerId, staleMs)) {
+      acquiredSync = true
+      break
     }
     if (Date.now() - start > timeoutMs) throw new Error(`Failed to acquire lock ${lockPath} after ${timeoutMs}ms`)
-    try {
-      const sab = new SharedArrayBuffer(4)
-      const arr = new Int32Array(sab)
-      Atomics.wait(arr, 0, 0, 50)
-    } catch {
-      // Atomics.wait not available (e.g., worker without SAB) - busy-wait fallback
-      const until = Date.now() + 50
-      while (Date.now() < until) {
-        // intentional empty busy-wait
-      }
-    }
+    sleepSyncMs(50)
   }
   if (acquiredSync) {
     try {
