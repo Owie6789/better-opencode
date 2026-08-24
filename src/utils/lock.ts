@@ -13,7 +13,9 @@ export function createLockFile(lockPath: string, ownerId: string): boolean {
       const now = new Date()
       try {
         utimesSync(lockPath, now, now)
-      } catch {}
+      } catch {
+        // ignore utimes best-effort
+      }
     } finally {
       closeSync(fd)
     }
@@ -29,6 +31,7 @@ export function isLockStale(lockPath: string, staleMs: number): boolean {
     const st = statSync(lockPath)
     return Date.now() - st.mtimeMs > staleMs
   } catch {
+    // ignore missing lock stat
     return false
   }
 }
@@ -40,6 +43,7 @@ export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_0
     contentBefore = readFileSync(lockPath, "utf8")
     mtimeBefore = statSync(lockPath).mtimeMs
   } catch {
+    // missing before snapshot
     return false
   }
   if (contentBefore === ownerId) return false
@@ -52,6 +56,7 @@ export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_0
     unlinkSync(lockPath)
     return true
   } catch {
+    // concurrent takeover
     return false
   }
 }
@@ -68,18 +73,26 @@ export function refreshLockFile(lockPath: string, ownerId: string): void {
       } finally {
         closeSync(fd)
       }
-    } catch {}
+    } catch {
+      // ignore fsync best-effort
+    }
     try {
       utimesSync(lockPath, new Date(), new Date())
-    } catch {}
-  } catch {}
+    } catch {
+      // ignore utimes best-effort
+    }
+  } catch {
+    // missing lock during refresh
+  }
 }
 
 export function releaseLockFile(lockPath: string, ownerId: string): void {
   try {
     const cur = readFileSync(lockPath, "utf8")
     if (cur === ownerId) unlinkSync(lockPath)
-  } catch {}
+  } catch {
+    // ignore missing on release
+  }
 }
 
 export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {

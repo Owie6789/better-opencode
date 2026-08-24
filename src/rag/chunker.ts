@@ -180,47 +180,58 @@ export const chunkText = chunkFile
 
 let treeSitterInit: Promise<object | null> | null = null
 let treeSitterWarned = false
+
+function noteTreeSitterFallback(logger?: Logger): void {
+  if (logger && !treeSitterWarned) {
+    logger.info("tree-sitter not available, using regex fallback")
+    treeSitterWarned = true
+  }
+}
+
+async function loadTreeSitterModule(): Promise<Record<string, unknown> | null> {
+  const mod = (await import("web-tree-sitter").catch(() => null)) as unknown as Record<string, unknown> | null
+  return mod
+}
+
+async function initParser(parserCandidate: unknown): Promise<boolean> {
+  const parserObj = parserCandidate as Record<string, unknown> | null
+  if (parserObj && typeof parserObj.init === "function") {
+    try {
+      await (parserObj as { init: () => Promise<void> }).init()
+    } catch {}
+    return true
+  }
+  return false
+}
+
 async function tryLoadTreeSitter(logger?: Logger): Promise<object | null> {
   if (treeSitterInit !== null) return treeSitterInit
   try {
-    const mod = (await import("web-tree-sitter").catch(() => null)) as unknown as Record<string, unknown> | null
+    const mod = await loadTreeSitterModule()
     if (!mod) {
       treeSitterInit = Promise.resolve(null)
-      if (logger && !treeSitterWarned) {
-        logger.info("tree-sitter not available, using regex fallback")
-        treeSitterWarned = true
-      }
+      noteTreeSitterFallback(logger)
       return null
     }
     const Parser: unknown = mod.Parser ?? mod.default ?? mod
-    const parserObj = Parser as Record<string, unknown> | null
-    if (parserObj && typeof parserObj.init === "function") {
-      try {
-        await (parserObj as { init: () => Promise<void> }).init()
-      } catch {}
+    const inited = await initParser(Parser)
+    if (inited) {
       treeSitterInit = Promise.resolve(mod as object)
       return mod as object
     }
     const loaded: object | null = mod.Parser ? (mod as object) : null
     treeSitterInit = Promise.resolve(loaded)
-    if (!loaded && logger && !treeSitterWarned) {
-      logger.info("tree-sitter not available, using regex fallback")
-      treeSitterWarned = true
-    }
+    if (!loaded) noteTreeSitterFallback(logger)
     return loaded
   } catch {
     treeSitterInit = Promise.resolve(null)
-    if (logger && !treeSitterWarned) {
-      logger.info("tree-sitter not available, using regex fallback")
-      treeSitterWarned = true
-    }
+    noteTreeSitterFallback(logger)
     return null
   }
 }
 
 export async function tryTreeSitterChunk(file: string, content: string, logger?: Logger): Promise<Chunk[] | null> {
-  // Optional tree-sitter path: attempt to use web-tree-sitter WASM if available, else regex fallback is intentional.
-  // This is an optional dependency; absence is not an error - regex chunker remains primary path.
+  // Optional tree-sitter path: use web-tree-sitter WASM when available, else regex fallback is intentional.
   try {
     const ts = await tryLoadTreeSitter(logger)
     if (ts) {
@@ -230,17 +241,14 @@ export async function tryTreeSitterChunk(file: string, content: string, logger?:
         if (maybeParser && typeof (maybeParser as Record<string, unknown>).init === "function") {
           // init already attempted in tryLoadTreeSitter
         }
-        // TODO: bundle tree-sitter wasm grammars (typescript, python, etc) and use parser.setLanguage(lang) to extract function/class nodes at AST boundaries
+        // Future: bundle tree-sitter wasm grammars (typescript, python, etc) and use parser.setLanguage(lang) to extract nodes at AST boundaries
         logger?.debug("tree-sitter parser available but grammar not bundled, using regex fallback")
       } catch {
         logger?.warn("tree-sitter parse failed, using regex fallback")
       }
       return chunkFile(file, content)
     }
-    if (logger && !treeSitterWarned) {
-      logger.info("tree-sitter not available, using regex fallback")
-      treeSitterWarned = true
-    }
+    noteTreeSitterFallback(logger)
     return chunkFile(file, content)
   } catch {
     return null

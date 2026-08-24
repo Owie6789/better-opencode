@@ -87,55 +87,51 @@ export async function hybridSearch(
 }
 
 let crossEncoderWarned = false
+
+function warnCrossEncoderFallback(logger: Logger): void {
+  if (crossEncoderWarned) return
+  logger.warn("cross-encoder requested but model not found, using heuristic fallback")
+  crossEncoderWarned = true
+}
+
+async function resolveCrossEncoderState(logger: Logger): Promise<"disabled" | "runtime-missing" | "model-missing" | "model-found" | "no-path"> {
+  if (process.env.ENABLE_CROSS_ENCODER !== "1") return "disabled"
+  const runtime = await import("onnxruntime-node").catch(() => null)
+  if (!runtime) {
+    warnCrossEncoderFallback(logger)
+    return "runtime-missing"
+  }
+  const modelPath = process.env.CROSS_ENCODER_MODEL_PATH
+  if (!modelPath) {
+    warnCrossEncoderFallback(logger)
+    return "no-path"
+  }
+  let modelFound = false
+  try {
+    modelFound = existsSync(modelPath)
+  } catch {}
+  if (!modelFound) {
+    warnCrossEncoderFallback(logger)
+    return "model-missing"
+  }
+  logger.debug(`cross-encoder model found at ${modelPath} but heuristic fallback in use (stub)`)
+  return "model-found"
+}
+
 async function tryCrossEncoderRerank(
   query: string,
   candidates: Array<{ chunk: Chunk; score: number }>,
   logger: Logger,
 ): Promise<Array<{ chunk: Chunk; score: number }> | null> {
-  const enabled = process.env.ENABLE_CROSS_ENCODER === "1"
-  if (!enabled) return null
+  const state = await resolveCrossEncoderState(logger)
+  if (state === "disabled") return null
   try {
-    const runtime = await import("onnxruntime-node").catch(() => null)
-    if (!runtime) {
-      if (!crossEncoderWarned) {
-        logger.warn("cross-encoder requested but model not found, using heuristic fallback")
-        crossEncoderWarned = true
-      }
-      // Intentional heuristic fallback: onnxruntime-node not installed, so real cross-encoder cannot run.
-      // Fall through to heuristic boost below rather than claiming cross-encoder rerank.
-    } else {
-      const modelPath = process.env.CROSS_ENCODER_MODEL_PATH
-      if (modelPath) {
-        let modelFound = false
-        try {
-          modelFound = existsSync(modelPath)
-        } catch {}
-        if (!modelFound) {
-          if (!crossEncoderWarned) {
-            logger.warn("cross-encoder requested but model not found, using heuristic fallback")
-            crossEncoderWarned = true
-          }
-          // TODO: bundle cross-encoder ONNX model and load via runtime.InferenceSession.create(modelPath)
-        } else {
-          logger.debug(`cross-encoder model found at ${modelPath} but heuristic fallback in use (stub)`)
-          // TODO: load real cross-encoder via onnxruntime-node when model is bundled
-        }
-      } else {
-        if (!crossEncoderWarned) {
-          logger.warn("cross-encoder requested but model not found, using heuristic fallback")
-          crossEncoderWarned = true
-        }
-        // TODO: set CROSS_ENCODER_MODEL_PATH to enable real cross-encoder; heuristic fallback is intentional until model is present
-      }
-    }
-    // HEURISTIC FALLBACK - intentional until real ONNX cross-encoder model is bundled.
-    // This is NOT a real cross-encoder; it does cheap token-overlap boosting as inexpensive rerank.
-    // When ENABLE_CROSS_ENCODER=1 but runtime/model missing we keep this fallback and warn instead of claiming cross-encoder rerank.
     const normalizedQuery = query.trim().toLowerCase()
     if (normalizedQuery.length === 0) return null
     logger.debug(`cross-encoder rerank stub active (heuristic fallback) queryLen=${normalizedQuery.length}`)
+    const firstTerm = normalizedQuery.split(/\s+/)[0] ?? ""
     const boosted = candidates.map((c) => {
-      const textMatch = c.chunk.text.toLowerCase().includes(normalizedQuery.split(/\s+/)[0] ?? "") ? 0.04 : 0
+      const textMatch = firstTerm.length > 0 && c.chunk.text.toLowerCase().includes(firstTerm) ? 0.04 : 0
       return { ...c, score: c.score + textMatch + 0.01 }
     })
     boosted.sort((a, b) => b.score - a.score)

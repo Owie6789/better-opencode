@@ -38,53 +38,50 @@ function syncCommands(targetDir) {
   return copied
 }
 
+function readConfigJson(configPath) {
+  let raw
+  try {
+    raw = readFileSync(configPath, "utf8")
+  } catch (e) {
+    console.error(`[better-opencode] failed to read ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(1)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    console.error(`[better-opencode] invalid JSON in ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(1)
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) { // NOSONAR S3403 null check required
+    console.error(`[better-opencode] invalid config in ${configPath}: expected JSON object`)
+    process.exit(1)
+  }
+  return parsed
+}
+
+function resolvePluginsEntry(json) {
+  if (Array.isArray(json.plugin)) return { plugins: json.plugin, arrKey: "plugin" }
+  if (Array.isArray(json.plugins)) return { plugins: json.plugins, arrKey: "plugins" }
+  if (json.plugin !== undefined || json.plugins !== undefined) {
+    console.error(`[better-opencode] invalid config: "plugin" must be an array`)
+    process.exit(1)
+  }
+  return { plugins: [], arrKey: "plugin" }
+}
+
 function ensurePluginInConfig(configPath) {
   if (!shouldWriteConfig) return false
   let json = {}
-  let existed = existsSync(configPath)
-  if (existed) {
-    let raw
-    try {
-      raw = readFileSync(configPath, "utf8")
-    } catch (e) {
-      console.error(`[better-opencode] failed to read ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
-      process.exit(1)
-    }
-    try {
-      json = JSON.parse(raw)
-    } catch (e) {
-      console.error(`[better-opencode] invalid JSON in ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
-      process.exit(1)
-    }
-    if (json === null || typeof json !== "object" || Array.isArray(json)) {
-      console.error(`[better-opencode] invalid config in ${configPath}: expected JSON object`)
-      process.exit(1)
-    }
-  }
-  let plugins
-  let arrKey
-  if (Array.isArray(json.plugin)) {
-    plugins = json.plugin
-    arrKey = "plugin"
-  } else if (Array.isArray(json.plugins)) {
-    plugins = json.plugins
-    arrKey = "plugins"
-  } else if (json.plugin !== undefined || json.plugins !== undefined) {
-    console.error(`[better-opencode] invalid config in ${configPath}: "plugin" must be an array`)
-    process.exit(1)
-  } else {
-    plugins = []
-    arrKey = "plugin"
-  }
-  if (!plugins.includes("better-opencode")) {
-    plugins.push("better-opencode")
-    json[arrKey] = plugins
-    const dir = dirname(configPath)
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    writeFileSync(configPath, JSON.stringify(json, null, 2) + "\n", "utf8")
-    return true
-  }
-  return false
+  if (existsSync(configPath)) json = readConfigJson(configPath)
+  const { plugins, arrKey } = resolvePluginsEntry(json)
+  if (plugins.includes("better-opencode")) return false
+  plugins.push("better-opencode")
+  json[arrKey] = plugins
+  const dir = dirname(configPath)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  writeFileSync(configPath, JSON.stringify(json, null, 2) + "\n", "utf8")
+  return true
 }
 
 function main() {
