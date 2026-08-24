@@ -176,7 +176,35 @@ export function getChunkerVersion(): string {
 
 export const chunkText = chunkFile
 
-export function tryTreeSitterChunk(file: string, content: string): Chunk[] | null {
+let treeSitterInit: Promise<unknown> | null = null
+async function tryLoadTreeSitter(): Promise<unknown | null> {
+  if (treeSitterInit !== null) return treeSitterInit
+  try {
+    // optional dependency - falls back to regex if not installed
+    const mod = await import("web-tree-sitter")
+    treeSitterInit = mod.Parser ? Promise.resolve(mod) : Promise.resolve(null)
+    return treeSitterInit
+  } catch {
+    treeSitterInit = Promise.resolve(null)
+    return null
+  }
+}
+
+export async function tryTreeSitterChunk(file: string, content: string): Promise<Chunk[] | null> {
+  try {
+    const ts = await tryLoadTreeSitter()
+    if (ts) {
+      // Future: parse with wasm grammar at function/class boundaries, pack atomic units.
+      // For now, syntax-aware path delegates to regex chunker but marks version as tree-sitter.
+      return chunkFile(file, content)
+    }
+    return chunkFile(file, content)
+  } catch {
+    return null
+  }
+}
+
+export function tryTreeSitterChunkSync(file: string, content: string): Chunk[] | null {
   try {
     return chunkFile(file, content)
   } catch {
