@@ -16,7 +16,8 @@ function fixtureProject(): string {
 describe("live opencode E2E via Plugin export", () => {
   it("exercises full plugin lifecycle as opencode would", async () => {
     const projectRoot = fixtureProject()
-    const plugin = await createPlugin({ projectRoot, directory: projectRoot } as never)
+    try {
+      const plugin = await createPlugin({ projectRoot, directory: projectRoot } as never)
 
     expect(plugin.hooks).toBeDefined()
     const hooks = plugin.hooks as Record<string, unknown>
@@ -37,7 +38,7 @@ describe("live opencode E2E via Plugin export", () => {
     const sysHook = hooks["experimental.chat.system.transform"] as (input: unknown, output: unknown) => Promise<void>
     const sysOut: { system: string[] } = { system: ["You are helpful."] }
     await sysHook({ system: ["You are helpful."] }, sysOut)
-    expect(sysOut.system.length).toBeGreaterThanOrEqual(1)
+    expect(sysOut.system.length).toBe(1)
     expect(sysOut.system.join("\n")).toContain("You are helpful.")
 
     const beforeHook = hooks["tool.execute.before"] as (input: unknown, output: unknown) => Promise<void>
@@ -61,6 +62,8 @@ describe("live opencode E2E via Plugin export", () => {
     expect(health.toLowerCase()).toContain("instincts")
 
     expect(existsSync(join(projectRoot, "app.ts"))).toBe(true)
-    rmSync(projectRoot, { recursive: true, force: true })
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true })
+    }
   }, 30_000)
 })

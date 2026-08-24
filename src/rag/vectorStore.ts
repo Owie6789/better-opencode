@@ -32,7 +32,7 @@ function bm25Score(queryTokens: string[], docTokens: string[], avgLen: number, d
 
 export class MemoryVectorStore implements VectorStore {
   private chunks: Chunk[] = []
-  private logger: Logger
+  private readonly logger: Logger
 
   constructor(logger: Logger = new Logger(false)) {
     this.logger = logger
@@ -87,8 +87,7 @@ export class MemoryVectorStore implements VectorStore {
       const score = bm25Score(queryTokens, tokens, avgLen, tokens.length, idf)
       const boosted = chunk.kind === "definition" ? score * 1.3 : score
       const fileBoost = chunk.file.includes(query.split(/\s+/)[0] ?? "") ? boosted * 1.1 : boosted
-      void fileBoost
-      return { chunk, score: boosted }
+      return { chunk, score: fileBoost }
     })
 
     scored.sort((a, b) => b.score - a.score)
@@ -123,12 +122,14 @@ function checkSqliteVec(): boolean {
 }
 
 export class SqliteVecVectorStore implements VectorStore {
-  private mem = new MemoryVectorStore()
+  private readonly mem = new MemoryVectorStore()
+  private readonly logger: Logger
   constructor(
     private readonly dbPath: string,
-    logger?: Logger,
+    logger: Logger = new Logger(false),
   ) {
-    void logger
+    this.logger = logger
+    this.logger.warn(`SqliteVecVectorStore ${dbPath}: persistence not yet wired, delegating to in-memory (fallback)`)
   }
   async upsert(chunks: Chunk[]): Promise<void> {
     await this.mem.upsert(chunks)
@@ -153,8 +154,12 @@ export class SqliteVecVectorStore implements VectorStore {
 export function createVectorStore(kind: string, logger?: Logger, opts?: { dbPath?: string }): VectorStore {
   if (kind === "sqlite-vec") {
     if (checkSqliteVec()) {
-      logger?.info("sqlite-vec available, using SqliteVecVectorStore (WAL+vec0)")
-      return new SqliteVecVectorStore(opts?.dbPath ?? ":memory:", logger)
+      if (opts?.dbPath && opts.dbPath !== ":memory:") {
+        logger?.warn(`sqlite-vec persistence not yet wired for ${opts.dbPath}, using MemoryVectorStore fallback (WAL+vec0 deferred)`)
+        return new MemoryVectorStore(logger)
+      }
+      logger?.warn("sqlite-vec available but persistence not yet wired, using MemoryVectorStore fallback (claiming WAL+vec0 deferred)")
+      return new MemoryVectorStore(logger)
     }
     logger?.warn("sqlite-vec requested but native extension unavailable (Bun/macOS or missing better-sqlite3), falling back to MemoryVectorStore")
     return new MemoryVectorStore(logger)
