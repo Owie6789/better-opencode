@@ -1,13 +1,12 @@
 const SECRET_PATTERNS: RegExp[] = [
-  /\bapi[_-]?key\s*[:=]\s*\S{8,}/i,
+  /(?:^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/i,
   /\bsecret\s*[:=]\s*\S{8,}/i,
   /\b(password|passwd)\s*[:=]\s*\S{4,}/i,
-  /\bsk-[a-zA-Z0-9]{16,}/,
+  /\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\b/,
   /ghp_[a-zA-Z0-9]{10,}/,
   /AKIA[0-9A-Z]{16}/,
   /-----BEGIN (RSA )?PRIVATE KEY-----/,
   /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/,
-  /\bapikey\s*[:=]/i,
 ]
 
 const INJECTION_PATTERNS: RegExp[] = [

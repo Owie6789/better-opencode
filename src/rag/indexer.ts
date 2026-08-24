@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { glob } from "glob"
-import { chunkFile, getChunkerVersion } from "./chunker.js"
+import { chunkFile, getChunkerVersion, tryTreeSitterChunkSync } from "./chunker.js"
 import type { Chunk } from "../types.js"
 import type { Embedder } from "./embedder.js"
 import type { VectorStore } from "./vectorStore.js"
@@ -68,7 +68,7 @@ export class IndexService {
         }
       }
 
-      const chunks = chunkFile(rel, content)
+      const chunks = tryTreeSitterChunkSync(rel, content) ?? chunkFile(rel, content)
       if (chunks.length === 0) {
         skipped++
         continue
@@ -100,7 +100,7 @@ export class IndexService {
     const abs = join(repoRoot, relPath)
     if (!existsSync(abs)) return 0
     const content = readFileSync(abs, "utf8")
-    const chunks = chunkFile(relPath, content)
+    const chunks = tryTreeSitterChunkSync(relPath, content) ?? chunkFile(relPath, content)
     if (chunks.length === 0) return 0
     const embeddings = await this.opts.embedder.embed(chunks.map((c) => c.text.slice(0, 2000)))
     chunks.forEach((c, idx) => {

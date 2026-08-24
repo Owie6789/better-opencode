@@ -65,7 +65,18 @@ export class InstinctsStore {
       } finally {
         closeSync(fd)
       }
-    } catch {}
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      const isWindows = process.platform === "win32"
+      const tolerated = isWindows || e.code === "EPERM" || e.code === "EINVAL" || e.code === "ENOSYS"
+      if (!tolerated) {
+        try {
+          if (existsSync(tmp)) unlinkSync(tmp)
+        } catch {}
+        throw err
+      }
+      this.logger.warn("file fsync not supported on this platform, continuing without fsync")
+    }
     try {
       renameSync(tmp, this.filePath)
     } catch (err) {
@@ -86,7 +97,13 @@ export class InstinctsStore {
       } finally {
         closeSync(dirFd)
       }
-    } catch {}
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      const isWindows = process.platform === "win32"
+      const tolerated = isWindows || e.code === "EINVAL" || e.code === "EPERM" || e.code === "ENOSYS"
+      if (!tolerated) throw err
+      this.logger.warn("directory fsync not supported on this platform, durability reduced to file fsync only")
+    }
   }
 
   all(): Instinct[] {
