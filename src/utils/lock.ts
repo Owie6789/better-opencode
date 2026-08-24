@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, writeFileSync, utimesSync, fsyncSync } from "node:fs"
+import { existsSync, mkdirSync, openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, writeFileSync, utimesSync, fsyncSync, renameSync } from "node:fs"
 import { dirname } from "node:path"
 import { randomBytes } from "node:crypto"
 import { AsyncLocalStorage } from "node:async_hooks"
@@ -36,7 +36,7 @@ export function isLockStale(lockPath: string, staleMs: number): boolean {
   }
 }
 
-export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_000): boolean {
+export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_000): boolean { // NOSONAR - atomic stale takeover intentionally branches for POSIX/Windows fsync+rename
   let contentBefore = ""
   let mtimeBefore = 0
   try {
@@ -53,10 +53,65 @@ export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_0
     const contentAfter = readFileSync(lockPath, "utf8")
     if (contentAfter !== contentBefore) return false
     if (stAfter.mtimeMs !== mtimeBefore) return false
-    unlinkSync(lockPath)
-    return true
   } catch {
     // concurrent takeover or already removed
+    return false
+  }
+  const tmpPath = `${lockPath}.tmp.${ownerId}.${randomBytes(2).toString("hex")}`
+  try {
+    writeFileSync(tmpPath, ownerId, "utf8")
+    try {
+      const stFinal = statSync(lockPath)
+      const contentFinal = readFileSync(lockPath, "utf8")
+      if (contentFinal !== contentBefore) {
+        unlinkSync(tmpPath)
+        return false
+      }
+      if (stFinal.mtimeMs !== mtimeBefore) {
+        unlinkSync(tmpPath)
+        return false
+      }
+    } catch {
+      unlinkSync(tmpPath)
+      return false
+    }
+    try {
+      renameSync(tmpPath, lockPath)
+    } catch {
+      try {
+        unlinkSync(lockPath)
+      } catch {
+        try {
+          unlinkSync(tmpPath)
+        } catch {
+          // ignore tmp cleanup after failed unlink
+        }
+        return false
+      }
+      renameSync(tmpPath, lockPath)
+    }
+    try {
+      const fd = openSync(lockPath, "r")
+      try {
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
+    } catch {
+      // ignore fsync best-effort after claim
+    }
+    try {
+      utimesSync(lockPath, new Date(), new Date())
+    } catch {
+      // ignore utimes best-effort
+    }
+    return true
+  } catch {
+    try {
+      unlinkSync(tmpPath)
+    } catch {
+      // ignore tmp cleanup
+    }
     return false
   }
 }
@@ -109,13 +164,30 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): P
   const staleMs = 10_000
   let refreshInterval: ReturnType<typeof setInterval> | null = null
 
+  let acquired = false
   while (!createLockFile(lockPath, ownerId)) {
     if (isLockStale(lockPath, staleMs)) {
-      claimStaleLock(lockPath, ownerId, staleMs)
+      if (claimStaleLock(lockPath, ownerId, staleMs)) {
+        try {
+          if (readFileSync(lockPath, "utf8") === ownerId) {
+            acquired = true
+            break
+          }
+        } catch {
+          // lost race after claim, retry
+        }
+      }
       continue
     }
     if (Date.now() - start > timeoutMs) throw new Error(`Failed to acquire lock ${lockPath} after ${timeoutMs}ms`)
     await new Promise((r) => setTimeout(r, retryMs))
+  }
+  if (acquired) {
+    try {
+      utimesSync(lockPath, new Date(), new Date())
+    } catch {
+      // ignore utimes best-effort after CAS claim
+    }
   }
 
   const doRefresh = (): void => refreshLockFile(lockPath, ownerId)
@@ -143,9 +215,19 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
   const start = Date.now()
   const timeoutMs = 5000
   const staleMs = 10_000
+  let acquiredSync = false
   while (!createLockFile(lockPath, ownerId)) {
     if (isLockStale(lockPath, staleMs)) {
-      claimStaleLock(lockPath, ownerId, staleMs)
+      if (claimStaleLock(lockPath, ownerId, staleMs)) {
+        try {
+          if (readFileSync(lockPath, "utf8") === ownerId) {
+            acquiredSync = true
+            break
+          }
+        } catch {
+          // lost race after claim, retry
+        }
+      }
       continue
     }
     if (Date.now() - start > timeoutMs) throw new Error(`Failed to acquire lock ${lockPath} after ${timeoutMs}ms`)
@@ -159,6 +241,13 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
       while (Date.now() < until) {
         // intentional empty busy-wait
       }
+    }
+  }
+  if (acquiredSync) {
+    try {
+      utimesSync(lockPath, new Date(), new Date())
+    } catch {
+      // ignore utimes best-effort after CAS claim
     }
   }
   const newStore = new Set(existingStore ?? [])

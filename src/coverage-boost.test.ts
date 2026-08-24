@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { withFileLock, withFileLockSync, ensureDir, createLockFile, isLockStale, claimStaleLock, refreshLockFile, releaseLockFile } from "./utils/lock.js"
@@ -47,7 +47,9 @@ describe("coverage boost", () => {
     expect(contentBefore).toBe("owner1")
     expect(claimStaleLock(p, "owner1", 10_000)).toBe(false)
     expect(claimStaleLock(p, "owner2", 10_000)).toBe(true)
-    expect(existsSync(p)).toBe(false)
+    expect(existsSync(p)).toBe(true)
+    expect(readFileSync(p, "utf8")).toBe("owner2")
+    unlinkSync(p)
     writeFileSync(p, "ownerA")
     refreshLockFile(p, "ownerB")
     expect(readFileSync(p, "utf8")).toBe("ownerA")
