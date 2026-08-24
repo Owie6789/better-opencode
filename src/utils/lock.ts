@@ -150,7 +150,7 @@ export function releaseLockFile(lockPath: string, ownerId: string): void {
   }
 }
 
-export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> { // NOSONAR - CAS stale takeover loop intentionally branches for timeout/retry/fsync
   const existingStore = lockAsyncStorage.getStore()
   if (existingStore?.has(lockPath)) {
     return await fn()
@@ -204,7 +204,7 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): P
   }
 }
 
-export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
+export function withFileLockSync<T>(lockPath: string, fn: () => T): T { // NOSONAR - sync CAS stale takeover mirrors async, intentional duplication for sync context
   const existingStore = lockAsyncStorage.getStore()
   if (existingStore?.has(lockPath)) {
     return fn()
