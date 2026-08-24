@@ -1,13 +1,14 @@
-const ALNUM = "A-Za-z0-9"
 const SECRET_PATTERNS: RegExp[] = [
-  new RegExp("(?:^|[^" + ALNUM + "_])(?:[" + ALNUM + "]+_)?api[_-]?key\\s*[:=]\\s*\\S+", "i"),
+  /(?:^|\W)(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/i,
+  /aws_secret_access_key\s*[:=]\s*\S+/i,
+  /aws.?secret.?access.?key\s*[:=]\s*\S+/i,
   /\bsecret\s*[:=]\s*\S{8,}/i,
-  /\b(password|passwd)\s*[:=]\s*\S{4,}/i,
-  new RegExp("\\bsk-(?:[" + ALNUM + "]+-)*[" + ALNUM + "]{16,}\\b"),
-  new RegExp("ghp_[" + ALNUM + "]{10,}"),
+  /\b(?:password|passwd)\s*[:=]\s*\S{4,}/i,
+  /\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\b/,
+  /ghp_[A-Za-z0-9]{10,}/,
   /AKIA[0-9A-Z]{16}/,
-  /-----BEGIN (RSA )?PRIVATE KEY-----/,
-  new RegExp("Bearer\\s+[" + ALNUM + "\\-._~+/]+=*"),
+  /-----BEGIN (?:RSA )?PRIVATE KEY-----/,
+  /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/,
 ]
 
 const INJECTION_PATTERNS: RegExp[] = [
@@ -47,10 +48,23 @@ export function scanSkillText(text: string): ScanResult {
   return { safe: true }
 }
 
+const SCRUB_PATTERNS: RegExp[] = [
+  /(?:^|\W)(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/gi,
+  /aws_secret_access_key\s*[:=]\s*\S+/gi,
+  /aws.?secret.?access.?key\s*[:=]\s*\S+/gi,
+  /\bsecret\s*[:=]\s*\S{8,}/gi,
+  /\b(?:password|passwd)\s*[:=]\s*\S{4,}/gi,
+  /\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\b/gi,
+  /ghp_[A-Za-z0-9]{10,}/gi,
+  /AKIA[0-9A-Z]{16}/gi,
+  /-----BEGIN (?:RSA )?PRIVATE KEY-----/gi,
+  /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/gi,
+]
+
 export function scrubSecrets(text: string): string {
   let out = text
-  for (const re of SECRET_PATTERNS) {
-    out = out.replace(new RegExp(re.source, "gi"), "[REDACTED]")
+  for (const re of SCRUB_PATTERNS) {
+    out = out.replace(re, "[REDACTED]")
   }
   return out
 }

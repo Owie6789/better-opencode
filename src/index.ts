@@ -66,7 +66,7 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
   }
 
   const teachCmd = new TeachCommand(instincts, logger)
-  const selfImproveCmd = new SelfImproveCommand(instincts, skills, ledger, session, cache, logger, projectRoot)
+  const selfImproveCmd = new SelfImproveCommand(instincts, skills, ledger, session, cache, logger, projectRoot, vectorStore)
 
   const deps = {
     config,

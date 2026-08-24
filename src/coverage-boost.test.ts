@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { withFileLock, ensureDir } from "./utils/lock.js"
+import { withFileLock, withFileLockSync, ensureDir, createLockFile, isLockStale, claimStaleLock, refreshLockFile, releaseLockFile } from "./utils/lock.js"
 import { getConfig, getCacheDir, getInstinctsPath, getSkillsLibraryDir } from "./config.js"
 import { FingerprintStore } from "./stores/fingerprint.js"
 import { SkillStore } from "./stores/skillStore.js"
@@ -28,6 +28,42 @@ describe("coverage boost", () => {
     expect(existsSync(join(dir, "a"))).toBe(true)
     ensureDir(join(dir, "b", "c"))
     expect(existsSync(join(dir, "b", "c"))).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it("lock helpers stale CAS and sync reentrancy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lock2-"))
+    const p = join(dir, "test.lock")
+    const p2 = join(dir, "sync.lock")
+    const syncRes = withFileLockSync(p2, () => 99)
+    expect(syncRes).toBe(99)
+    expect(createLockFile(p, "owner1")).toBe(true)
+    expect(createLockFile(p, "owner2")).toBe(false)
+    expect(isLockStale(p, 10_000)).toBe(false)
+    const old = new Date(Date.now() - 20_000)
+    utimesSync(p, old, old)
+    expect(isLockStale(p, 10_000)).toBe(true)
+    const contentBefore = readFileSync(p, "utf8")
+    expect(contentBefore).toBe("owner1")
+    expect(claimStaleLock(p, "owner1", 10_000)).toBe(false)
+    expect(claimStaleLock(p, "owner2", 10_000)).toBe(true)
+    expect(existsSync(p)).toBe(false)
+    writeFileSync(p, "ownerA")
+    refreshLockFile(p, "ownerB")
+    expect(readFileSync(p, "utf8")).toBe("ownerA")
+    refreshLockFile(p, "ownerA")
+    expect(readFileSync(p, "utf8")).toBe("ownerA")
+    releaseLockFile(p, "ownerB")
+    expect(existsSync(p)).toBe(true)
+    releaseLockFile(p, "ownerA")
+    expect(existsSync(p)).toBe(false)
+    const reLock = join(dir, "re.lock")
+    const outer = await withFileLock(reLock, async () => {
+      const inner = withFileLockSync(reLock, () => 123)
+      expect(inner).toBe(123)
+      return inner + 1
+    })
+    expect(outer).toBe(124)
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -195,5 +231,54 @@ describe("coverage boost", () => {
     expect(mem.count()).toBe(0)
     const fallback = createVectorStore("sqlite-vec" as any)
     expect(fallback).toBeDefined()
+  })
+
+  it("chunker tree-sitter fallback and hybridSearch cross-encoder stub", async () => {
+    const { tryTreeSitterChunk, tryTreeSitterChunkSync } = await import("./rag/chunker.js")
+    const { hybridSearch } = await import("./rag/hybridSearch.js")
+    const logger = new Logger(true)
+    const syncRes = tryTreeSitterChunkSync("a.ts", "function foo(){}", logger)
+    expect(syncRes && syncRes.length).toBeGreaterThan(0)
+    const asyncRes = await tryTreeSitterChunk("a.ts", "function bar(){}", logger)
+    expect(asyncRes && asyncRes.length).toBeGreaterThan(0)
+    const vs = new MemoryVectorStore()
+    const emb = new HashEmbedder()
+    const texts = ["function calculate sum", "hello world unrelated", "calculate sum function", "another calculate", "yet another sum", "extra"]
+    const vecs = await emb.embed(texts)
+    await vs.upsert(texts.map((t, i) => ({ id: `id${i}`, file: `f${i}.ts`, language: "ts", symbol: null, kind: "chunk", lines: [1, 1] as [number, number], hash: `h${i}`, text: t, embedding: vecs[i] })))
+    const prev = process.env.ENABLE_CROSS_ENCODER
+    process.env.ENABLE_CROSS_ENCODER = "1"
+    delete process.env.CROSS_ENCODER_MODEL_PATH
+    const hits = await hybridSearch("calculate sum", vs, emb, { limit: 2 }, logger)
+    expect(hits.length).toBeGreaterThan(0)
+    process.env.ENABLE_CROSS_ENCODER = "1"
+    process.env.CROSS_ENCODER_MODEL_PATH = "/tmp/nonexistent-model.onnx"
+    const hits2 = await hybridSearch("calculate sum", vs, emb, { limit: 2 }, logger)
+    expect(hits2.length).toBeGreaterThan(0)
+    if (prev === undefined) delete process.env.ENABLE_CROSS_ENCODER
+    else process.env.ENABLE_CROSS_ENCODER = prev
+    delete process.env.CROSS_ENCODER_MODEL_PATH
+  })
+
+  it("injectionScanner AWS secret patterns", async () => {
+    const { scanForSecrets, scrubSecrets } = await import("./rag/injectionScanner.js")
+    expect(scanForSecrets("AWS_SECRET_ACCESS_KEY= wJalrXUtnFEMI/K7MDENG/bPxRfiCY").safe).toBe(false)
+    expect(scanForSecrets("aws_secret_access_key: mysecret12345678").safe).toBe(false)
+    expect(scrubSecrets("token AWS_SECRET_ACCESS_KEY= secretvalue").includes("[REDACTED]")).toBe(true)
+  })
+
+  it("instinctsStore lock transaction", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "inst-lock-"))
+    const p = join(dir, "instincts.json")
+    const store = new InstinctsStore(p, new Logger(false))
+    const now = Date.now()
+    const base = { id: "t1", text: "test lock", score: 5, confidence: 5, hits: 2, successRate: 0.8, tokenDelta: 0, toolCallsDelta: 0, explicitWeight: 0, createdAt: now, updatedAt: now, ttlDays: 14, source: "implicit" as const, tags: [] as string[] }
+    store.add(base)
+    expect(store.findById("t1")?.text).toBe("test lock")
+    store.upsertWithoutLock({ ...base, text: "updated via withoutLock" })
+    expect(store.findById("t1")?.text).toBe("updated via withoutLock")
+    expect(store.lockPath.endsWith(".lock")).toBe(true)
+    expect(store.lockFilePath.endsWith(".lock")).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
   })
 })

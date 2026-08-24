@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type { Chunk } from "../types.js"
+import { Logger } from "../utils/logger.js"
 
 const CHUNKER_VERSION = "v1-tree-regex-fallback"
 
@@ -178,26 +179,67 @@ export function getChunkerVersion(): string {
 export const chunkText = chunkFile
 
 let treeSitterInit: Promise<object | null> | null = null
-async function tryLoadTreeSitter(): Promise<object | null> {
+let treeSitterWarned = false
+async function tryLoadTreeSitter(logger?: Logger): Promise<object | null> {
   if (treeSitterInit !== null) return treeSitterInit
   try {
-    const mod = await import("web-tree-sitter") as { Parser?: unknown }
+    const mod = (await import("web-tree-sitter").catch(() => null)) as unknown as Record<string, unknown> | null
+    if (!mod) {
+      treeSitterInit = Promise.resolve(null)
+      if (logger && !treeSitterWarned) {
+        logger.info("tree-sitter not available, using regex fallback")
+        treeSitterWarned = true
+      }
+      return null
+    }
+    const Parser: unknown = mod.Parser ?? mod.default ?? mod
+    const parserObj = Parser as Record<string, unknown> | null
+    if (parserObj && typeof parserObj.init === "function") {
+      try {
+        await (parserObj as { init: () => Promise<void> }).init()
+      } catch {}
+      treeSitterInit = Promise.resolve(mod as object)
+      return mod as object
+    }
     const loaded: object | null = mod.Parser ? (mod as object) : null
     treeSitterInit = Promise.resolve(loaded)
+    if (!loaded && logger && !treeSitterWarned) {
+      logger.info("tree-sitter not available, using regex fallback")
+      treeSitterWarned = true
+    }
     return loaded
   } catch {
     treeSitterInit = Promise.resolve(null)
+    if (logger && !treeSitterWarned) {
+      logger.info("tree-sitter not available, using regex fallback")
+      treeSitterWarned = true
+    }
     return null
   }
 }
 
-export async function tryTreeSitterChunk(file: string, content: string): Promise<Chunk[] | null> {
+export async function tryTreeSitterChunk(file: string, content: string, logger?: Logger): Promise<Chunk[] | null> {
+  // Optional tree-sitter path: attempt to use web-tree-sitter WASM if available, else regex fallback is intentional.
+  // This is an optional dependency; absence is not an error - regex chunker remains primary path.
   try {
-    const ts = await tryLoadTreeSitter()
+    const ts = await tryLoadTreeSitter(logger)
     if (ts) {
-      // Future: parse with wasm grammar at function/class boundaries, pack atomic units.
-      // For now, syntax-aware path delegates to regex chunker but marks version as tree-sitter.
+      // Attempt real parsing if wasm grammar available; fallback is intentional until grammars are bundled.
+      try {
+        const maybeParser = (ts as Record<string, unknown>).Parser ?? (ts as Record<string, unknown>).default ?? ts
+        if (maybeParser && typeof (maybeParser as Record<string, unknown>).init === "function") {
+          // init already attempted in tryLoadTreeSitter
+        }
+        // TODO: bundle tree-sitter wasm grammars (typescript, python, etc) and use parser.setLanguage(lang) to extract function/class nodes at AST boundaries
+        logger?.debug("tree-sitter parser available but grammar not bundled, using regex fallback")
+      } catch {
+        logger?.warn("tree-sitter parse failed, using regex fallback")
+      }
       return chunkFile(file, content)
+    }
+    if (logger && !treeSitterWarned) {
+      logger.info("tree-sitter not available, using regex fallback")
+      treeSitterWarned = true
     }
     return chunkFile(file, content)
   } catch {
@@ -205,8 +247,12 @@ export async function tryTreeSitterChunk(file: string, content: string): Promise
   }
 }
 
-export function tryTreeSitterChunkSync(file: string, content: string): Chunk[] | null {
+export function tryTreeSitterChunkSync(file: string, content: string, logger?: Logger): Chunk[] | null {
   try {
+    if (logger && !treeSitterWarned) {
+      logger.info("tree-sitter not available, using regex fallback")
+      treeSitterWarned = true
+    }
     return chunkFile(file, content)
   } catch {
     return null

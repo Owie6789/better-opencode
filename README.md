@@ -188,7 +188,7 @@ Or manually:
 
 ```bash
 rm -rf .agents/skills/bad-skill .claude/skills/bad-skill
-rm ~/.config/opencode/skills-library/bad-skill.md
+rm -rf ~/.config/opencode/skills-library/bad-skill
 npm test
 ```
 

@@ -3,8 +3,8 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-  release:
-    types: [published]
+
+concurrency: release
 
 permissions:
   contents: read

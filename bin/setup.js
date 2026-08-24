@@ -43,10 +43,22 @@ function ensurePluginInConfig(configPath) {
   let json = {}
   let existed = existsSync(configPath)
   if (existed) {
+    let raw
     try {
-      json = JSON.parse(readFileSync(configPath, "utf8"))
-    } catch {
-      json = {}
+      raw = readFileSync(configPath, "utf8")
+    } catch (e) {
+      console.error(`[better-opencode] failed to read ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
+      process.exit(1)
+    }
+    try {
+      json = JSON.parse(raw)
+    } catch (e) {
+      console.error(`[better-opencode] invalid JSON in ${configPath}: ${e instanceof Error ? e.message : String(e)}`)
+      process.exit(1)
+    }
+    if (json === null || typeof json !== "object" || Array.isArray(json)) {
+      console.error(`[better-opencode] invalid config in ${configPath}: expected JSON object`)
+      process.exit(1)
     }
   }
   let plugins
@@ -57,6 +69,9 @@ function ensurePluginInConfig(configPath) {
   } else if (Array.isArray(json.plugins)) {
     plugins = json.plugins
     arrKey = "plugins"
+  } else if (json.plugin !== undefined || json.plugins !== undefined) {
+    console.error(`[better-opencode] invalid config in ${configPath}: "plugin" must be an array`)
+    process.exit(1)
   } else {
     plugins = []
     arrKey = "plugin"

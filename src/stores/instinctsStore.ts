@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import { createHash, randomBytes } from "node:crypto"
 import { type Instinct, InstinctSchema } from "../types.js"
 import { Logger } from "../utils/logger.js"
+import { withFileLockSync } from "../utils/lock.js"
 
 const MAX_CHARS_SNAPSHOT = 2200
 const MAX_CHARS_WORKING = 1375
@@ -38,6 +39,14 @@ export class InstinctsStore {
     private readonly logger: Logger = new Logger(false),
     private readonly maxInstincts = 200,
   ) {}
+
+  get lockPath(): string {
+    return `${this.filePath}.lock`
+  }
+
+  get lockFilePath(): string {
+    return this.lockPath
+  }
 
   load(): Instinct[] {
     if (this.loaded) return [...this.instincts]
@@ -100,7 +109,7 @@ export class InstinctsStore {
     }
   }
 
-  save(): void {
+  private saveInternal(): void {
     ensureDirFor(this.filePath)
     const data = JSON.stringify(this.instincts, null, 2)
     const nonce = randomBytes(3).toString("hex")
@@ -130,33 +139,53 @@ export class InstinctsStore {
     this.fsyncDir(dirname(this.filePath))
   }
 
+  save(): void {
+    withFileLockSync(this.lockPath, () => this.saveInternal())
+  }
+
   all(): Instinct[] {
     return this.load()
   }
 
   add(instinct: Instinct): void {
     const parsed = InstinctSchema.parse(instinct)
-    this.load()
-    const idx = this.instincts.findIndex((i) => i.id === parsed.id)
-    if (idx >= 0) this.instincts[idx] = parsed
-    else this.instincts.push(parsed)
-    this.enforceCap()
-    this.save()
+    withFileLockSync(this.lockPath, () => {
+      this.loaded = false
+      this.load()
+      const idx = this.instincts.findIndex((i) => i.id === parsed.id)
+      if (idx >= 0) this.instincts[idx] = parsed
+      else this.instincts.push(parsed)
+      this.enforceCap()
+      this.saveInternal()
+    })
   }
 
   upsert(instinct: Instinct): void {
     this.add(instinct)
   }
 
+  upsertWithoutLock(instinct: Instinct): void {
+    const parsed = InstinctSchema.parse(instinct)
+    const idx = this.instincts.findIndex((i) => i.id === parsed.id)
+    if (idx >= 0) this.instincts[idx] = parsed
+    else this.instincts.push(parsed)
+    this.enforceCap()
+    this.saveInternal()
+  }
+
   remove(id: string): boolean {
-    this.load()
-    const before = this.instincts.length
-    this.instincts = this.instincts.filter((i) => i.id !== id)
-    if (this.instincts.length !== before) {
-      this.save()
-      return true
-    }
-    return false
+    let removed = false
+    withFileLockSync(this.lockPath, () => {
+      this.loaded = false
+      this.load()
+      const before = this.instincts.length
+      this.instincts = this.instincts.filter((i) => i.id !== id)
+      if (this.instincts.length !== before) {
+        this.saveInternal()
+        removed = true
+      }
+    })
+    return removed
   }
 
   findById(id: string): Instinct | undefined {
@@ -218,21 +247,25 @@ export class InstinctsStore {
   }
 
   gc(ttlDaysDefault = 14): Instinct[] {
-    this.load()
-    const now = Date.now()
-    const before = this.instincts.length
-    const evicted: Instinct[] = []
-    this.instincts = this.instincts.filter((inst) => {
-      const ageDays = (now - inst.updatedAt) / (1000 * 60 * 60 * 24)
-      const ttl = inst.ttlDays || ttlDaysDefault
-      const isExpired = ageDays > ttl && this.decayedScore(inst) < 0.5
-      if (isExpired) evicted.push(inst)
-      return !isExpired
+    let evicted: Instinct[] = []
+    withFileLockSync(this.lockPath, () => {
+      this.loaded = false
+      this.load()
+      const now = Date.now()
+      const before = this.instincts.length
+      evicted = []
+      this.instincts = this.instincts.filter((inst) => {
+        const ageDays = (now - inst.updatedAt) / (1000 * 60 * 60 * 24)
+        const ttl = inst.ttlDays || ttlDaysDefault
+        const isExpired = ageDays > ttl && this.decayedScore(inst) < 0.5
+        if (isExpired) evicted.push(inst)
+        return !isExpired
+      })
+      if (evicted.length > 0) this.saveInternal()
+      if (before !== this.instincts.length) {
+        this.logger.info(`GC evicted ${evicted.length} instincts`)
+      }
     })
-    if (evicted.length > 0) this.save()
-    if (before !== this.instincts.length) {
-      this.logger.info(`GC evicted ${evicted.length} instincts`)
-    }
     return evicted
   }
 
@@ -241,7 +274,9 @@ export class InstinctsStore {
   }
 
   clear(): void {
-    this.instincts = []
-    this.save()
+    withFileLockSync(this.lockPath, () => {
+      this.instincts = []
+      this.saveInternal()
+    })
   }
 }

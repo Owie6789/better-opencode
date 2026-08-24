@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
+import { createHash } from "node:crypto"
 import createPlugin from "./index.js"
 
 function fixtureProject(): string {
@@ -64,6 +65,10 @@ describe("live opencode E2E via Plugin export", () => {
     expect(existsSync(join(projectRoot, "app.ts"))).toBe(true)
     } finally {
       rmSync(projectRoot, { recursive: true, force: true })
+      try {
+        const repoHash = createHash("sha256").update(projectRoot, "utf8").digest("hex").slice(0, 12)
+        rmSync(join(homedir(), ".cache", "better-opencode", repoHash), { recursive: true, force: true })
+      } catch {}
     }
   }, 30_000)
 })
