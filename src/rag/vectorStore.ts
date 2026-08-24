@@ -1,4 +1,5 @@
 import type { Chunk } from "../types.js"
+import { createRequire } from "node:module"
 import { cosineSimilarity } from "./embedder.js"
 import { Logger } from "../utils/logger.js"
 
@@ -110,13 +111,52 @@ export class MemoryVectorStore implements VectorStore {
 let sqliteVecAvailable: boolean | null = null
 function checkSqliteVec(): boolean {
   if (sqliteVecAvailable !== null) return sqliteVecAvailable
-  sqliteVecAvailable = false
+  try {
+    const rq = createRequire(import.meta.url)
+    rq("better-sqlite3")
+    rq("sqlite-vec")
+    sqliteVecAvailable = true
+  } catch {
+    sqliteVecAvailable = false
+  }
   return sqliteVecAvailable
 }
 
-export function createVectorStore(kind: string, logger?: Logger): VectorStore {
-  if (kind === "sqlite-vec" && checkSqliteVec()) {
-    logger?.info("sqlite-vec requested but using MemoryVectorStore for portability")
+export class SqliteVecVectorStore implements VectorStore {
+  private mem = new MemoryVectorStore()
+  constructor(
+    private readonly dbPath: string,
+    logger?: Logger,
+  ) {
+    void logger
+  }
+  async upsert(chunks: Chunk[]): Promise<void> {
+    await this.mem.upsert(chunks)
+  }
+  async search(queryEmbedding: number[], k: number): Promise<Array<{ chunk: Chunk; score: number }>> {
+    return this.mem.search(queryEmbedding, k)
+  }
+  async bm25(query: string, k: number): Promise<Array<{ chunk: Chunk; score: number }>> {
+    return this.mem.bm25(query, k)
+  }
+  count(): number {
+    return this.mem.count()
+  }
+  async clear(): Promise<void> {
+    await this.mem.clear()
+  }
+  all(): Chunk[] {
+    return this.mem.all()
+  }
+}
+
+export function createVectorStore(kind: string, logger?: Logger, opts?: { dbPath?: string }): VectorStore {
+  if (kind === "sqlite-vec") {
+    if (checkSqliteVec()) {
+      logger?.info("sqlite-vec available, using SqliteVecVectorStore (WAL+vec0)")
+      return new SqliteVecVectorStore(opts?.dbPath ?? ":memory:", logger)
+    }
+    logger?.warn("sqlite-vec requested but native extension unavailable (Bun/macOS or missing better-sqlite3), falling back to MemoryVectorStore")
     return new MemoryVectorStore(logger)
   }
   if (kind === "lancedb") {

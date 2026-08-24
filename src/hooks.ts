@@ -51,10 +51,10 @@ export function createSystemTransformHandler(deps: HookDeps) {
     }
 
     const snapshot = instincts.frozenSnapshot(config.systemBudget)
+    const pendingSystemInserts: string[] = []
     if (snapshot.length > 0) {
-      const text = `<instincts budget=\"${config.systemBudget}\">\n${snapshot}\n</instincts>`
-      output.system.push(text)
-      logger.debug(`injected instincts ${snapshot.length} chars`)
+      pendingSystemInserts.push(`<instincts budget=\"${config.systemBudget}\">\n${snapshot}\n</instincts>`)
+      logger.debug(`prepared instincts ${snapshot.length} chars`)
     }
 
     try {
@@ -66,13 +66,20 @@ export function createSystemTransformHandler(deps: HookDeps) {
           const ragText = selectForInjection(hits, config.ragTokenBudget)
           if (ragText.length > 0) {
             const scrubbed = scrubSecrets(ragText)
-            output.system.push(scrubbed)
-            logger.debug(`injected RAG ${scrubbed.length} chars from ${hits.length} hits`)
+            pendingSystemInserts.push(scrubbed)
+            logger.debug(`prepared RAG ${scrubbed.length} chars from ${hits.length} hits`)
           }
         }
       }
     } catch (err) {
       logger.warn("RAG injection failed", err)
+    }
+
+    if (pendingSystemInserts.length > 0) {
+      const merged = pendingSystemInserts.join("\n\n")
+      if (output.system.length === 0) output.system.push(merged)
+      else output.system[0] = `${output.system[0]}\n\n${merged}`
+      logger.debug(`injected system merge ${merged.length} chars into primary block (Qwen compat, was ${pendingSystemInserts.length} inserts)`)
     }
 
     const afterLen = output.system.join("\n").length

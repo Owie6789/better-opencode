@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { type Instinct, InstinctSchema } from "../types.js"
@@ -56,9 +56,37 @@ export class InstinctsStore {
   save(): void {
     ensureDirFor(this.filePath)
     const data = JSON.stringify(this.instincts, null, 2)
-    const tmp = `${this.filePath}.tmp`
+    const tmp = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`
     writeFileSync(tmp, data, "utf8")
-    writeFileSync(this.filePath, data, "utf8")
+    try {
+      const fd = openSync(tmp, "r")
+      try {
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
+    } catch {}
+    try {
+      renameSync(tmp, this.filePath)
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      if (e.code !== "ENOENT") throw err
+      try {
+        if (existsSync(tmp)) writeFileSync(this.filePath, data, "utf8")
+      } catch {}
+    } finally {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp)
+      } catch {}
+    }
+    try {
+      const dirFd = openSync(dirname(this.filePath), "r")
+      try {
+        fsyncSync(dirFd)
+      } finally {
+        closeSync(dirFd)
+      }
+    } catch {}
   }
 
   all(): Instinct[] {
