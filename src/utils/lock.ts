@@ -154,8 +154,11 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
       const arr = new Int32Array(sab)
       Atomics.wait(arr, 0, 0, 50)
     } catch {
+      // Atomics.wait not available (e.g., worker without SAB) - busy-wait fallback
       const until = Date.now() + 50
-      while (Date.now() < until) {}
+      while (Date.now() < until) {
+        // intentional empty busy-wait
+      }
     }
   }
   const newStore = new Set(existingStore ?? [])
