@@ -1,13 +1,13 @@
 const ALNUM = "A-Za-z0-9"
 const SECRET_PATTERNS: RegExp[] = [
-  new RegExp(`(?:^|[^${ALNUM}_])(?:[${ALNUM}]+_)?api[_-]?key\\s*[:=]\\s*\\S+`, "i"),
+  new RegExp("(?:^|[^" + ALNUM + "_])(?:[" + ALNUM + "]+_)?api[_-]?key\\s*[:=]\\s*\\S+", "i"),
   /\bsecret\s*[:=]\s*\S{8,}/i,
   /\b(password|passwd)\s*[:=]\s*\S{4,}/i,
-  new RegExp(`\\bsk-(?:[${ALNUM}]+-)*[${ALNUM}]{16,}\\b`),
-  new RegExp(`ghp_[${ALNUM}]{10,}`),
+  new RegExp("\\bsk-(?:[" + ALNUM + "]+-)*[" + ALNUM + "]{16,}\\b"),
+  new RegExp("ghp_[" + ALNUM + "]{10,}"),
   /AKIA[0-9A-Z]{16}/,
   /-----BEGIN (RSA )?PRIVATE KEY-----/,
-  new RegExp(`Bearer\\s+[${ALNUM}\\-._~+/]+=*`),
+  new RegExp("Bearer\\s+[" + ALNUM + "\\-._~+/]+=*"),
 ]
 
 const INJECTION_PATTERNS: RegExp[] = [
