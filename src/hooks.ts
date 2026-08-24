@@ -31,12 +31,55 @@ export interface HookDeps {
   projectRoot: string
 }
 
+function extractLastUserText(messages: Array<{ role: string; content: unknown }>): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m || m.role !== "user") continue
+    const c = m.content
+    if (typeof c === "string" && c.trim().length > 0) return c.trim().slice(0, 4000)
+    if (Array.isArray(c)) {
+      const parts: string[] = []
+      for (const p of c) {
+        if (typeof p === "string") parts.push(p)
+        else if (p && typeof p === "object" && "text" in p && typeof (p as { text: unknown }).text === "string") parts.push((p as { text: string }).text)
+        else if (p && typeof p === "object" && "content" in p && typeof (p as { content: unknown }).content === "string") parts.push((p as { content: string }).content)
+      }
+      const joined = parts.join("\n").trim()
+      if (joined.length > 0) return joined.slice(0, 4000)
+    } else if (c && typeof c === "object" && "text" in c && typeof (c as { text: unknown }).text === "string") {
+      return (c as { text: string }).text.trim().slice(0, 4000)
+    }
+  }
+  return ""
+}
+
+function scoreSkillForQuery(skill: { slug: string; frontmatter: { description: string; tags: string[] }; body: string }, query: string): number {
+  const q = query.toLowerCase()
+  const qTerms = q.split(/\s+/).filter(Boolean)
+  const hay = `${skill.slug} ${skill.frontmatter.description} ${skill.frontmatter.tags.join(" ")} ${skill.body.slice(0, 500)}`.toLowerCase()
+  let score = 0
+  for (const t of qTerms) if (hay.includes(t)) score += 1
+  if (skill.frontmatter.description.toLowerCase().includes(q.slice(0, 40))) score += 2
+  return score
+}
+
+function buildSkillCatalogBlock(skills: ReturnType<SkillStore["listT2"]>, query: string, limit = 3): string {
+  if (skills.length === 0) return ""
+  const scored = skills
+    .map((s) => ({ s, score: query ? scoreSkillForQuery(s as never, query) : 0 }))
+    .sort((a, b) => b.score - a.score)
+  const top = query ? scored.filter((x) => x.score > 0).slice(0, limit) : scored.slice(0, limit)
+  if (top.length === 0) return ""
+  const lines = top.map(({ s }) => `- ${s.slug}: ${s.frontmatter.description.slice(0, 120)}${s.frontmatter.tags.length ? ` [${s.frontmatter.tags.join(",")}]` : ""}`)
+  return `<available-skills topK=\"${limit}\">\nActive project skills matching your prompt (T2 ${skills.length} total, T3 archived). Prefer these when relevant:\n${lines.join("\n")}\n</available-skills>`
+}
+
 export function createSystemTransformHandler(deps: HookDeps) {
   return async (
     input: { system: string[] },
     output: { system: string[]; abort?: boolean },
   ): Promise<void> => {
-    const { config, instincts, vectorStore, embedder, logger, session } = deps
+    const { config, instincts, skills, logger, session } = deps
 
     if (session.isSubAgent) {
       logger.debug("skip system transform for subagent")
@@ -58,21 +101,16 @@ export function createSystemTransformHandler(deps: HookDeps) {
     }
 
     try {
-      const lastUserMsg = ""
-      if (lastUserMsg || vectorStore.count() > 0) {
-        const query = lastUserMsg || "project context"
-        const hits = await hybridSearch(query, vectorStore, embedder, { limit: 6, rrfK: 60 }, logger).catch(() => [])
-        if (hits.length > 0) {
-          const ragText = selectForInjection(hits, config.ragTokenBudget)
-          if (ragText.length > 0) {
-            const scrubbed = scrubSecrets(ragText)
-            pendingSystemInserts.push(scrubbed)
-            logger.debug(`prepared RAG ${scrubbed.length} chars from ${hits.length} hits`)
-          }
+      const allSkills = skills.listT2()
+      if (allSkills.length > 0) {
+        const catalog = buildSkillCatalogBlock(allSkills, "", 5)
+        if (catalog.length > 0) {
+          pendingSystemInserts.push(catalog)
+          logger.debug(`prepared catalog ${allSkills.length} skills`)
         }
       }
     } catch (err) {
-      logger.warn("RAG injection failed", err)
+      logger.warn("catalog injection failed", err)
     }
 
     if (pendingSystemInserts.length > 0) {
@@ -92,9 +130,46 @@ export function createMessagesTransformHandler(deps: HookDeps) {
     input: { messages: Array<{ role: string; content: unknown }> },
     output: { messages: Array<{ role: string; content: unknown }> },
   ): Promise<void> => {
-    void deps
-    void input
-    output.messages = [...input.messages]
+    const { config, vectorStore, embedder, skills, logger, session } = deps
+    output.messages.splice(0, output.messages.length, ...input.messages)
+
+    if (session.isSubAgent || !config.enabled) return
+
+    const query = extractLastUserText(input.messages)
+    if (!query) {
+      logger.debug("messages transform: no user query")
+      return
+    }
+
+    const pending: string[] = []
+
+    try {
+      if (vectorStore.count() > 0) {
+        const hits = await hybridSearch(query, vectorStore, embedder, { limit: 3, rrfK: 60 }, logger).catch(() => [])
+        if (hits.length > 0) {
+          const ragText = selectForInjection(hits, config.ragTokenBudget)
+          if (ragText.length > 0) pending.push(scrubSecrets(ragText))
+        }
+      }
+    } catch (err) {
+      logger.warn("messages RAG failed", err)
+    }
+
+    try {
+      const allSkills = skills.listT2()
+      const catalog = buildSkillCatalogBlock(allSkills, query, 3)
+      if (catalog.length > 0) pending.push(catalog)
+    } catch (err) {
+      logger.warn("messages catalog failed", err)
+    }
+
+    if (pending.length > 0) {
+      const merged = pending.join("\n\n")
+      const injection = { role: "system" as const, content: merged } as unknown as { role: string; content: unknown }
+      const insertAt = output.messages.length > 0 ? output.messages.length - 1 : 0
+      output.messages.splice(insertAt, 0, injection)
+      logger.debug(`messages transform injected ${merged.length} chars topK 3 at ${insertAt} query=\"${query.slice(0, 40)}\"`)
+    }
   }
 }
 

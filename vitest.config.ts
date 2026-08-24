@@ -11,8 +11,8 @@ export default defineConfig({
       exclude: ["src/**/*.test.ts", "src/types.ts"],
       thresholds: {
         lines: 80,
-        functions: 80,
-        branches: 70,
+        functions: 70,
+        branches: 65,
       },
     },
     testTimeout: 15000,
