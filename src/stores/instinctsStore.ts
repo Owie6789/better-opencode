@@ -1,14 +1,27 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
+import { createHash } from "node:crypto"
 import { type Instinct, InstinctSchema } from "../types.js"
 import { Logger } from "../utils/logger.js"
 
 const MAX_CHARS_SNAPSHOT = 2200
 const MAX_CHARS_WORKING = 1375
 
-function instinctsPath(): string {
+function instinctsPath(repoRoot?: string): string {
+  if (repoRoot) {
+    const h = repoHashForPath(repoRoot)
+    return join(homedir(), ".cache", "better-opencode", h, "instincts.json")
+  }
   return join(homedir(), ".cache", "better-opencode", "instincts.json")
+}
+
+function repoHashForPath(p: string): string {
+  return createHash("sha256").update(p, "utf8").digest("hex").slice(0, 12)
+}
+
+export function instinctsPathForRepo(repoRoot: string): string {
+  return instinctsPath(repoRoot)
 }
 
 function ensureDirFor(file: string): void {
