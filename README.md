@@ -6,7 +6,7 @@ Self-improving opencode plugin that learns from your sessions. It watches tool u
 
 - Records tool calls and error to fix pairs while you work.
 - Keeps T1 instincts in `~/.cache/better-opencode/instincts.json` with 7 to 30 day TTL, scored decay, and FTS5 search capped to 2200 chars in system context.
-- Promotes good instincts to T2 skills in `.agents/skills` and `.claude/skills` when confidence passes 3 and hits reach 3, with max 5 per session and only `auto-generated: true`.
+- Promotes good instincts to T2 skills in `.agents/skills` and `.claude/skills` only when `auto-generated: true`, confidence reaches 3, hits reach 3, and `maxSkillsPerSession` guard allows it (max 5 per session). `src/curator/promotionService.ts` gates on threshold 3 and 3 hits, `src/curator/guardrails.ts` enforces the per session cap, and every write versions history for rollback.
 - Archives older material to T3 `~/.config/opencode/skills-library` and versions every skill write so you can roll back.
 - Retrieves context with hybrid search over vector cosine, BM25, and AST symbol match merged by RRF k 60, then boosts definition and file coherence and does an optional cross encoder rerank. Injection stays under 4000 tokens in a `<retrieved>` block.
 - Caches chunk and embedding work by `sha256(text + chunkerVersion + embedderModel)` so reindexing is cheap unless files change.
@@ -37,7 +37,7 @@ Example defaults live in `opencode.json.example`. Copy it and adjust thresholds 
 
 Build and typecheck from a clean checkout:
 
-```
+```bash
 npm ci
 npm run typecheck
 npm run build
@@ -48,13 +48,13 @@ npm test
 
 - `teach` tool: store an explicit instinct. I use this when you type `/teach` or call `teach`. It writes with `explicitWeight 3` and TTL 30 days so explicit guidance outranks synthesized instincts.
 
-```
+```json
 teach: { text: "always validate input before processing" }
 ```
 
 - `self-improve` tool: inspect and control what the system learned.
 
-```
+```json
 self-improve: { action: "status" }                // budgets, counts, guardrail remaining
 self-improve: { action: "history", slug: "my-skill" } // version list for a skill
 self-improve: { action: "rollback", slug: "my-skill", version: 2 }
@@ -70,7 +70,7 @@ The CLI paths in `AGENTS.md` are `/self-improve status`, `/self-improve history`
 - T1 cache: `~/.cache/better-opencode/cache.json` and `~/.cache/better-opencode/cache.sqlite` when sqlite is available. Key is the content hash. L1 holds 1000 entries in memory, L2 persists.
 - T2 skills: `projectRoot/.agents/skills/<slug>/SKILL.md` and `projectRoot/.claude/skills/<slug>/SKILL.md` (mirrored). Version history sits next to the skill as `history.json`.
 - T3 archive: `~/.config/opencode/skills-library` keeps the last promoted copy for global recall.
-- Interviews: `~/.cache/better-opencode/interview.json` stores the adaptive 5 to 7 question answers so setup only asks once unless drift resets it.
+- Interviews: `~/.cache/better-opencode/interview-<safe>.json` where `safe` is the repo root sanitized to 40 chars stores the adaptive 5 to 7 question answers so setup only asks once unless drift resets it. See `src/quiz/interview.ts:112-115`.
 
 ## Rollback and runbook
 
@@ -78,14 +78,14 @@ This section is the rollback/runbook the production audit asked for.
 
 **If a promoted skill is wrong:**
 
-```
+```json
 self-improve: { action: "history", slug: "bad-skill" }
 self-improve: { action: "rollback", slug: "bad-skill", version: 1 }
 ```
 
 Or delete it directly and clear the cache entry:
 
-```
+```bash
 rm -rf .agents/skills/bad-skill .claude/skills/bad-skill
 rm ~/.config/opencode/skills-library/bad-skill.md
 npm test
@@ -101,7 +101,7 @@ The plugin versions each write as `.bak.N` next to the skill. Rollback restores 
 
 **Cache invalidation:**
 
-```
+```bash
 rm -rf ~/.cache/better-opencode
 ```
 

@@ -69,7 +69,7 @@ describe("hooks and index", () => {
     const h2 = createSystemTransformHandler(deps as any)
     const out2: any = { system: ["base"] }
     await h2({ system: ["base"] }, out2)
-    expect(out2.system.length).toBeGreaterThanOrEqual(1)
+    expect(out2.system.length).toBe(1)
     expect(out2.system.join("\n")).toContain("instincts")
     expect(out2.system.join("\n")).toContain("base")
 
@@ -92,8 +92,7 @@ describe("hooks and index", () => {
     const h = createSystemTransformHandler(deps as any)
     const out: any = { system: ["base"] }
     await h({ system: ["base"] }, out)
-    // should have RAG + instincts (if any) but at least not throw
-    expect(out.system.length).toBeGreaterThan(0)
+    expect(out.system.length).toBe(1)
     rmSync(dir, { recursive: true, force: true })
   })
 

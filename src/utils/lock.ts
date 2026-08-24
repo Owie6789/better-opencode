@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, writeSync, closeSync, unlinkSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, writeFileSync, utimesSync } from "node:fs"
 import { dirname } from "node:path"
 
 export async function withFileLock<T>(
@@ -7,28 +7,42 @@ export async function withFileLock<T>(
 ): Promise<T> {
   const dir = dirname(lockPath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  const ownerId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const start = Date.now()
   const timeoutMs = 5000
   const retryMs = 50
-  while (true) {
+  const staleMs = 10_000
+  let acquired = false
+  let refreshInterval: ReturnType<typeof setInterval> | null = null
+  while (!acquired) {
     try {
       const fd = openSync(lockPath, "wx")
       try {
-        writeSync(fd, String(process.pid))
+        writeSync(fd, ownerId)
+        const now = new Date()
+        try {
+          utimesSync(lockPath, now, now)
+        } catch {}
       } finally {
         closeSync(fd)
       }
-      break
+      acquired = true
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code
       if (code !== "EEXIST") throw err
       try {
         const st = statSync(lockPath)
         const age = Date.now() - st.mtimeMs
-        if (age > 10_000) {
+        if (age > staleMs) {
+          let content = ""
           try {
-            unlinkSync(lockPath)
+            content = readFileSync(lockPath, "utf8")
           } catch {}
+          if (content !== ownerId) {
+            try {
+              unlinkSync(lockPath)
+            } catch {}
+          }
           continue
         }
       } catch {}
@@ -36,11 +50,24 @@ export async function withFileLock<T>(
       await new Promise((r) => setTimeout(r, retryMs))
     }
   }
+  refreshInterval = setInterval(() => {
+    try {
+      const cur = readFileSync(lockPath, "utf8")
+      if (cur === ownerId) {
+        writeFileSync(lockPath, ownerId, "utf8")
+      }
+    } catch {}
+  }, 3000)
+  if (refreshInterval && typeof (refreshInterval as unknown as { unref: () => void }).unref === "function") {
+    ;(refreshInterval as unknown as { unref: () => void }).unref()
+  }
   try {
     return await fn()
   } finally {
+    if (refreshInterval) clearInterval(refreshInterval as unknown as NodeJS.Timeout)
     try {
-      unlinkSync(lockPath)
+      const cur = readFileSync(lockPath, "utf8")
+      if (cur === ownerId) unlinkSync(lockPath)
     } catch {}
   }
 }
