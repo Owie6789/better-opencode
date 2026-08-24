@@ -275,6 +275,8 @@ export class InstinctsStore {
 
   clear(): void {
     withFileLockSync(this.lockPath, () => {
+      this.loaded = false
+      this.load()
       this.instincts = []
       this.saveInternal()
     })

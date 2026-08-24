@@ -49,9 +49,9 @@ export function scanSkillText(text: string): ScanResult {
 }
 
 const SCRUB_PATTERNS: RegExp[] = [
-  /(?:^|\W)(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/gi, // NOSONAR
-  /aws_secret_access_key\s*[:=]\s*\S+/gi, // NOSONAR
-  /aws.?secret.?access.?key\s*[:=]\s*\S+/gi, // NOSONAR
+  /(?<![A-Za-z0-9_])(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/gi, // NOSONAR - lookbehind preserves delimiter
+  /(?<![A-Za-z0-9_])aws_secret_access_key\s*[:=]\s*\S+/gi, // NOSONAR
+  /(?<![A-Za-z0-9_])aws.?secret.?access.?key\s*[:=]\s*\S+/gi, // NOSONAR
   /\bsecret\s*[:=]\s*\S{8,}/gi,
   /\b(?:password|passwd)\s*[:=]\s*\S{4,}/gi,
   /\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\b/gi, // NOSONAR

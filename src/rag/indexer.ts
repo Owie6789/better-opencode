@@ -59,8 +59,9 @@ export class IndexService {
       if (content.length > 500_000) content = content.slice(0, 500_000)
 
       const hash = contentHash(content, this.chunkerVersion, embedder.model)
-      if (cacheStore?.has(hash)) {
-        const cached = cacheStore.get<Chunk[]>(hash)
+      const cacheKey = `${rHash.slice(0, 8)}:${hash}`
+      if (cacheStore?.has(cacheKey)) {
+        const cached = cacheStore.get<Chunk[]>(cacheKey)
         if (cached && cached.length > 0) {
           allChunks.push(...cached)
           skipped++
@@ -73,7 +74,7 @@ export class IndexService {
         skipped++
         continue
       }
-      if (cacheStore) cacheStore.set(hash, chunks)
+      if (cacheStore) cacheStore.set(cacheKey, chunks)
       allChunks.push(...chunks)
       indexed++
     }

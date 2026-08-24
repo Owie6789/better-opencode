@@ -225,7 +225,7 @@ This repo publishes to npm with trusted OIDC provenance. No long lived token nee
 
 - Package includes `dist/`, `src/commands/*.md`, `src/skills/*/SKILL.md`, `src/agents/*.md`, `bin/setup.js` (`package.json:files`)
 - `publishConfig.provenance: true` emits attestations
-- Workflow `.github/workflows/publish.yml` triggers on `v*` tags, `release: published`, or manual dispatch. It runs on `ubuntu-latest` with `node 24` and `npm@latest`, typechecks, lints, tests, builds, then `npm publish --provenance --access public` with `id-token: write`.
+- Workflow `.github/workflows/publish.yml` triggers on `v*` tags or manual dispatch (no `release: published` to avoid double publish on the same `v*` tag). It runs on `ubuntu-latest` with `node 24`, typechecks, lints, tests, builds, then `npm publish --provenance --access public` with `id-token: write`.
 
 First time setup on npmjs.com: Project Settings -> Trusted publishers -> Add GitHub Actions publisher for `Owie6789/better-opencode` workflow `publish.yml` and environment none. After that, push a tag:
 
@@ -269,4 +269,4 @@ npm view better-opencode dist.attestations
 
 ## Version and license
 
-Version is `0.1.0` in `package.json`. Types are strict TypeScript 5.6 with NodeNext. Tests use vitest 2.1 with v8 coverage thresholds 80 percent lines and functions. License is MIT.
+Version is `0.1.0` in `package.json`. Types are strict TypeScript 5.6 with NodeNext. Tests use vitest 4.1.11 with v8 coverage thresholds 79 percent lines (60 branches, 70 functions). License is MIT.

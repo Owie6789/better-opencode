@@ -56,7 +56,7 @@ export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_0
     unlinkSync(lockPath)
     return true
   } catch {
-    // concurrent takeover
+    // concurrent takeover or already removed
     return false
   }
 }
