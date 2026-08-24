@@ -1,0 +1,47 @@
+{
+  "name": "better-opencode",
+  "version": "0.1.0",
+  "description": "Hermes self-improving agent port as OpenCode plugin — aggressive autonomous skill injection, AST RAG, three-tier propagation",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": ["dist", "opencode.json"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "dev": "tsx watch src/index.ts",
+    "prepare": "npm run build"
+  },
+  "keywords": ["opencode", "plugin", "hermes", "self-improving", "rag", "ast"],
+  "license": "MIT",
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "glob": "^11.0.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5",
+    "@vitest/coverage-v8": "^2.1.5",
+    "typescript-eslint": "^8.17.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^9.2.0",
+    "sqlite-vec": "^0.1.6",
+    "onnxruntime-node": "^1.20.0",
+    "web-tree-sitter": "^0.25.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
