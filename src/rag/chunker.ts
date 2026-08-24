@@ -231,21 +231,10 @@ async function tryLoadTreeSitter(logger?: Logger): Promise<object | null> {
 }
 
 export async function tryTreeSitterChunk(file: string, content: string, logger?: Logger): Promise<Chunk[] | null> {
-  // Optional tree-sitter path: use web-tree-sitter WASM when available, else regex fallback is intentional.
   try {
     const ts = await tryLoadTreeSitter(logger)
     if (ts) {
-      // Attempt real parsing if wasm grammar available; fallback is intentional until grammars are bundled.
-      try {
-        const maybeParser = (ts as Record<string, unknown>).Parser ?? (ts as Record<string, unknown>).default ?? ts
-        if (maybeParser && typeof (maybeParser as Record<string, unknown>).init === "function") {
-          // init already attempted in tryLoadTreeSitter
-        }
-        // Future: bundle tree-sitter wasm grammars (typescript, python, etc) and use parser.setLanguage(lang) to extract nodes at AST boundaries
-        logger?.debug("tree-sitter parser available but grammar not bundled, using regex fallback")
-      } catch {
-        logger?.warn("tree-sitter parse failed, using regex fallback")
-      }
+      logger?.debug("tree-sitter parser available but grammar not bundled, using regex fallback")
       return chunkFile(file, content)
     }
     noteTreeSitterFallback(logger)

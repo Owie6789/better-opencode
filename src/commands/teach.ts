@@ -3,7 +3,6 @@ import type { Instinct } from "../types.js"
 import { InstinctsStore } from "../stores/instinctsStore.js"
 import { scrubSecrets, scanSkillText } from "../rag/injectionScanner.js"
 import { Logger } from "../utils/logger.js"
-import { withFileLock } from "../utils/lock.js"
 
 export interface TeachResult {
   instinct: Instinct
@@ -27,12 +26,9 @@ export class TeachCommand {
 
     const id = createHash("sha256").update(clean).digest("hex").slice(0, 12)
     const now = Date.now()
-    const lockPath = this.instincts.lockPath
 
     let instinct!: Instinct
-    await withFileLock(lockPath, async () => {
-      ;(this.instincts as unknown as { loaded: boolean }).loaded = false
-      this.instincts.load()
+    this.instincts.mutate(() => {
       const existing = this.instincts.findById(id)
       instinct = existing
         ? {

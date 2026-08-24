@@ -143,15 +143,21 @@ export class InstinctsStore {
     withFileLockSync(this.lockPath, () => this.saveInternal())
   }
 
+  mutate<T>(fn: () => T): T {
+    return withFileLockSync(this.lockPath, () => {
+      this.loaded = false
+      this.load()
+      return fn()
+    })
+  }
+
   all(): Instinct[] {
     return this.load()
   }
 
   add(instinct: Instinct): void {
     const parsed = InstinctSchema.parse(instinct)
-    withFileLockSync(this.lockPath, () => {
-      this.loaded = false
-      this.load()
+    this.mutate(() => {
       const idx = this.instincts.findIndex((i) => i.id === parsed.id)
       if (idx >= 0) this.instincts[idx] = parsed
       else this.instincts.push(parsed)
@@ -175,9 +181,7 @@ export class InstinctsStore {
 
   remove(id: string): boolean {
     let removed = false
-    withFileLockSync(this.lockPath, () => {
-      this.loaded = false
-      this.load()
+    this.mutate(() => {
       const before = this.instincts.length
       this.instincts = this.instincts.filter((i) => i.id !== id)
       if (this.instincts.length !== before) {
@@ -248,9 +252,7 @@ export class InstinctsStore {
 
   gc(ttlDaysDefault = 14): Instinct[] {
     let evicted: Instinct[] = []
-    withFileLockSync(this.lockPath, () => {
-      this.loaded = false
-      this.load()
+    this.mutate(() => {
       const now = Date.now()
       const before = this.instincts.length
       evicted = []
@@ -274,9 +276,7 @@ export class InstinctsStore {
   }
 
   clear(): void {
-    withFileLockSync(this.lockPath, () => {
-      this.loaded = false
-      this.load()
+    this.mutate(() => {
       this.instincts = []
       this.saveInternal()
     })

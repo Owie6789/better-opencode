@@ -150,6 +150,17 @@ export function releaseLockFile(lockPath: string, ownerId: string): void {
   }
 }
 
+export interface LockOptions {
+  timeoutMs?: number
+  staleMs?: number
+}
+
+const DEFAULT_LOCK_OPTIONS: Required<LockOptions> = { timeoutMs: 5000, staleMs: 10_000 }
+
+export function resolveLockOptions(opts?: LockOptions): Required<LockOptions> {
+  return { ...DEFAULT_LOCK_OPTIONS, ...opts }
+}
+
 export function tryStaleClaim(lockPath: string, ownerId: string, staleMs: number): boolean {
   if (!isLockStale(lockPath, staleMs)) return false
   if (!claimStaleLock(lockPath, ownerId, staleMs)) return false
@@ -173,20 +184,30 @@ export function sleepSyncMs(ms: number): void {
   }
 }
 
-export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
-  const existingStore = lockAsyncStorage.getStore()
-  if (existingStore?.has(lockPath)) {
-    return await fn()
-  }
+function buildOwnerId(): string {
+  return `${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}`
+}
+
+function ensureLockDir(lockPath: string): void {
   const dir = dirname(lockPath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const ownerId = `${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}`
-  const start = Date.now()
-  const timeoutMs = 5000
-  const retryMs = 50
-  const staleMs = 10_000
-  let refreshInterval: ReturnType<typeof setInterval> | null = null
+}
 
+function touchAfterCas(lockPath: string): void {
+  try {
+    utimesSync(lockPath, new Date(), new Date())
+  } catch {
+    // ignore utimes best-effort after CAS claim
+  }
+}
+
+export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>, opts?: LockOptions): Promise<T> {
+  const existingStore = lockAsyncStorage.getStore()
+  if (existingStore?.has(lockPath)) return await fn()
+  ensureLockDir(lockPath)
+  const ownerId = buildOwnerId()
+  const start = Date.now()
+  const { timeoutMs, staleMs } = resolveLockOptions(opts)
   let acquired = false
   while (!createLockFile(lockPath, ownerId)) {
     if (tryStaleClaim(lockPath, ownerId, staleMs)) {
@@ -194,16 +215,10 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): P
       break
     }
     if (Date.now() - start > timeoutMs) throw new Error(`Failed to acquire lock ${lockPath} after ${timeoutMs}ms`)
-    await new Promise((r) => setTimeout(r, retryMs))
+    await new Promise((r) => setTimeout(r, 50))
   }
-  if (acquired) {
-    try {
-      utimesSync(lockPath, new Date(), new Date())
-    } catch {
-      // ignore utimes best-effort after CAS claim
-    }
-  }
-
+  if (acquired) touchAfterCas(lockPath)
+  let refreshInterval: ReturnType<typeof setInterval> | null = null
   const doRefresh = (): void => refreshLockFile(lockPath, ownerId)
   refreshInterval = setInterval(doRefresh, 3000)
   const maybeUnref = refreshInterval as unknown as { unref?: () => void }
@@ -218,33 +233,23 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): P
   }
 }
 
-export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
+export function withFileLockSync<T>(lockPath: string, fn: () => T, opts?: LockOptions): T {
   const existingStore = lockAsyncStorage.getStore()
-  if (existingStore?.has(lockPath)) {
-    return fn()
-  }
-  const dir = dirname(lockPath)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const ownerId = `${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}`
+  if (existingStore?.has(lockPath)) return fn()
+  ensureLockDir(lockPath)
+  const ownerId = buildOwnerId()
   const start = Date.now()
-  const timeoutMs = 5000
-  const staleMs = 10_000
-  let acquiredSync = false
+  const { timeoutMs, staleMs } = resolveLockOptions(opts)
+  let acquired = false
   while (!createLockFile(lockPath, ownerId)) {
     if (tryStaleClaim(lockPath, ownerId, staleMs)) {
-      acquiredSync = true
+      acquired = true
       break
     }
     if (Date.now() - start > timeoutMs) throw new Error(`Failed to acquire lock ${lockPath} after ${timeoutMs}ms`)
     sleepSyncMs(50)
   }
-  if (acquiredSync) {
-    try {
-      utimesSync(lockPath, new Date(), new Date())
-    } catch {
-      // ignore utimes best-effort after CAS claim
-    }
-  }
+  if (acquired) touchAfterCas(lockPath)
   const newStore = new Set(existingStore ?? [])
   newStore.add(lockPath)
   try {
