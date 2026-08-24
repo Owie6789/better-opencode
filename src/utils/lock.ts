@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, writeFileSync, utimesSync } from "node:fs"
 import { dirname } from "node:path"
+import { randomBytes } from "node:crypto"
 
 export async function withFileLock<T>(
   lockPath: string,
@@ -7,7 +8,7 @@ export async function withFileLock<T>(
 ): Promise<T> {
   const dir = dirname(lockPath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const ownerId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const ownerId = `${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}`
   const start = Date.now()
   const timeoutMs = 5000
   const retryMs = 50
@@ -50,14 +51,13 @@ export async function withFileLock<T>(
       await new Promise((r) => setTimeout(r, retryMs))
     }
   }
-  refreshInterval = setInterval(() => {
+  const refreshLock = (): void => {
     try {
       const cur = readFileSync(lockPath, "utf8")
-      if (cur === ownerId) {
-        writeFileSync(lockPath, ownerId, "utf8")
-      }
+      if (cur === ownerId) writeFileSync(lockPath, ownerId, "utf8")
     } catch {}
-  }, 3000)
+  }
+  refreshInterval = setInterval(refreshLock, 3000)
   if (refreshInterval && typeof (refreshInterval as unknown as { unref: () => void }).unref === "function") {
     ;(refreshInterval as unknown as { unref: () => void }).unref()
   }
@@ -67,7 +67,9 @@ export async function withFileLock<T>(
     if (refreshInterval) clearInterval(refreshInterval as unknown as NodeJS.Timeout)
     try {
       const cur = readFileSync(lockPath, "utf8")
-      if (cur === ownerId) unlinkSync(lockPath)
+      if (cur === ownerId) {
+        unlinkSync(lockPath)
+      }
     } catch {}
   }
 }

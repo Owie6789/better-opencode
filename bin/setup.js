@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkgRoot = resolve(__dirname, "..")
-const args = process.argv.slice(2)
-const isGlobal = args.includes("--global") || args.includes("-g")
-const shouldWriteConfig = !args.includes("--no-config")
+const argSet = new Set(process.argv.slice(2))
+const isGlobal = argSet.has("--global") || argSet.has("-g")
+const shouldWriteConfig = !argSet.has("--no-config")
 
 function findCommandsDir() {
   const candidates = [join(pkgRoot, "src", "commands"), join(pkgRoot, "dist", "commands"), join(pkgRoot, "commands")]
@@ -49,8 +49,18 @@ function ensurePluginInConfig(configPath) {
       json = {}
     }
   }
-  const plugins = Array.isArray(json.plugin) ? json.plugin : Array.isArray(json.plugins) ? json.plugins : []
-  const arrKey = Array.isArray(json.plugin) ? "plugin" : Array.isArray(json.plugins) ? "plugins" : "plugin"
+  let plugins
+  let arrKey
+  if (Array.isArray(json.plugin)) {
+    plugins = json.plugin
+    arrKey = "plugin"
+  } else if (Array.isArray(json.plugins)) {
+    plugins = json.plugins
+    arrKey = "plugins"
+  } else {
+    plugins = []
+    arrKey = "plugin"
+  }
   if (!plugins.includes("better-opencode")) {
     plugins.push("better-opencode")
     json[arrKey] = plugins
@@ -80,11 +90,10 @@ function main() {
   console.log(`[better-opencode] synced ${copied} command(s) -> ${targetCommandsDir}`)
 
   const added = ensurePluginInConfig(configPath)
-  if (added) console.log(`[better-opencode] added \"better-opencode\" to ${configPath}`)
+  if (added) console.log(`[better-opencode] added 'better-opencode' to ${configPath}`)
   else console.log(`[better-opencode] plugin already present in ${configPath} (or --no-config)`)
 
   const globalCmd = join(homedir(), ".config", "opencode", "commands")
-  const projectCmd = join(cwd, ".opencode", "commands")
   if (!isGlobal && existsSync(globalCmd)) {
     console.log(`[better-opencode] note: global commands also exist at ${globalCmd}`)
   }

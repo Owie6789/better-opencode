@@ -38,7 +38,7 @@ describe("live opencode E2E via Plugin export", () => {
     const sysHook = hooks["experimental.chat.system.transform"] as (input: unknown, output: unknown) => Promise<void>
     const sysOut: { system: string[] } = { system: ["You are helpful."] }
     await sysHook({ system: ["You are helpful."] }, sysOut)
-    expect(sysOut.system.length).toBe(1)
+    expect(sysOut.system).toHaveLength(1)
     expect(sysOut.system.join("\n")).toContain("You are helpful.")
 
     const beforeHook = hooks["tool.execute.before"] as (input: unknown, output: unknown) => Promise<void>

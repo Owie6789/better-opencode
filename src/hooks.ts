@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import type { PluginConfig } from "./types.js"
 import { InstinctsStore } from "./stores/instinctsStore.js"
 import { SkillStore } from "./stores/skillStore.js"
@@ -31,24 +32,46 @@ export interface HookDeps {
   projectRoot: string
 }
 
+function partToText(part: unknown): string | null {
+  if (typeof part === "string") return part
+  if (part && typeof part === "object") {
+    const obj = part as Record<string, unknown>
+    const textVal = obj.text
+    if (typeof textVal === "string") return textVal
+    const contentVal = obj.content
+    if (typeof contentVal === "string") return contentVal
+  }
+  return null
+}
+
+function textFromContent(content: unknown): string | null {
+  if (typeof content === "string") {
+    const trimmed = content.trim()
+    return trimmed.length > 0 ? trimmed.slice(0, 4000) : null
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const p of content) {
+      const t = partToText(p)
+      if (t) parts.push(t)
+    }
+    const joined = parts.join("\n").trim()
+    return joined.length > 0 ? joined.slice(0, 4000) : null
+  }
+  const textVal = (content as { text?: unknown } | null)?.text
+  if (typeof textVal === "string") {
+    const trimmed = textVal.trim()
+    if (trimmed.length > 0) return trimmed.slice(0, 4000)
+  }
+  return null
+}
+
 function extractLastUserText(messages: Array<{ role: string; content: unknown }>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (!m || m.role !== "user") continue
-    const c = m.content
-    if (typeof c === "string" && c.trim().length > 0) return c.trim().slice(0, 4000)
-    if (Array.isArray(c)) {
-      const parts: string[] = []
-      for (const p of c) {
-        if (typeof p === "string") parts.push(p)
-        else if (p && typeof p === "object" && "text" in p && typeof (p as { text: unknown }).text === "string") parts.push((p as { text: string }).text)
-        else if (p && typeof p === "object" && "content" in p && typeof (p as { content: unknown }).content === "string") parts.push((p as { content: string }).content)
-      }
-      const joined = parts.join("\n").trim()
-      if (joined.length > 0) return joined.slice(0, 4000)
-    } else if (c && typeof c === "object" && "text" in c && typeof (c as { text: unknown }).text === "string") {
-      return (c as { text: string }).text.trim().slice(0, 4000)
-    }
+    if (m?.role !== "user") continue
+    const text = textFromContent(m?.content)
+    if (text) return text
   }
   return ""
 }
@@ -70,8 +93,11 @@ function buildSkillCatalogBlock(skills: ReturnType<SkillStore["listT2"]>, query:
     .sort((a, b) => b.score - a.score)
   const top = query ? scored.filter((x) => x.score > 0).slice(0, limit) : scored.slice(0, limit)
   if (top.length === 0) return ""
-  const lines = top.map(({ s }) => `- ${s.slug}: ${s.frontmatter.description.slice(0, 120)}${s.frontmatter.tags.length ? ` [${s.frontmatter.tags.join(",")}]` : ""}`)
-  return `<available-skills topK=\"${limit}\">\nActive project skills matching your prompt (T2 ${skills.length} total, T3 archived). Prefer these when relevant:\n${lines.join("\n")}\n</available-skills>`
+  const lines = top.map(({ s }) => {
+    const tagPart = s.frontmatter.tags.length > 0 ? ` [${s.frontmatter.tags.join(",")}]` : ""
+    return `- ${s.slug}: ${s.frontmatter.description.slice(0, 120)}${tagPart}`
+  })
+  return `<available-skills topK="${limit}">\nActive project skills matching your prompt (T2 ${skills.length} total, T3 archived). Prefer these when relevant:\n${lines.join("\n")}\n</available-skills>`
 }
 
 export function createSystemTransformHandler(deps: HookDeps) {
@@ -96,7 +122,7 @@ export function createSystemTransformHandler(deps: HookDeps) {
     const snapshot = instincts.frozenSnapshot(config.systemBudget)
     const pendingSystemInserts: string[] = []
     if (snapshot.length > 0) {
-      pendingSystemInserts.push(`<instincts budget=\"${config.systemBudget}\">\n${snapshot}\n</instincts>`)
+      pendingSystemInserts.push(`<instincts budget="${config.systemBudget}">\n${snapshot}\n</instincts>`)
       logger.debug(`prepared instincts ${snapshot.length} chars`)
     }
 
@@ -168,7 +194,7 @@ export function createMessagesTransformHandler(deps: HookDeps) {
       const injection = { role: "system" as const, content: merged } as unknown as { role: string; content: unknown }
       const insertAt = output.messages.length > 0 ? output.messages.length - 1 : 0
       output.messages.splice(insertAt, 0, injection)
-      logger.debug(`messages transform injected ${merged.length} chars topK 3 at ${insertAt} query=\"${query.slice(0, 40)}\"`)
+      logger.debug(`messages transform injected ${merged.length} chars topK 3 at ${insertAt} query='${query.slice(0, 40)}'`)
     }
   }
 }
@@ -236,7 +262,7 @@ export function createToolAfterHandler(deps: HookDeps) {
   }): Promise<void> => {
     const { session, ledger, logger } = deps
     const entry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `${Date.now()}-${randomBytes(3).toString("hex")}`,
       timestamp: Date.now(),
       tool: input.tool,
       input: input.args,
