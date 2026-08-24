@@ -1,5 +1,7 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
+import { homedir } from "node:os"
+import { createHash } from "node:crypto"
 import { getConfig } from "./config.js"
 import { InstinctsStore } from "./stores/instinctsStore.js"
 import { SkillStore } from "./stores/skillStore.js"
@@ -35,7 +37,7 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
   const debug = process.env.BETTER_OPENCODE_DEBUG === "true"
   const logger = new Logger(debug)
 
-  const instincts = new InstinctsStore(undefined, logger, config.maxInstincts)
+  const instincts = new InstinctsStore(join(homedir(), ".cache", "better-opencode", createHash("sha256").update(projectRoot, "utf8").digest("hex").slice(0, 12), "instincts.json"), logger, config.maxInstincts)
   const skills = new SkillStore(projectRoot, logger)
   const cache = new CacheStore(undefined, logger)
   const session = new SessionState(`sess-${Date.now()}`, null)

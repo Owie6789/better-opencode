@@ -7,7 +7,22 @@
   "exports": {
     ".": "./dist/index.js"
   },
-  "files": ["dist", "opencode.json"],
+  "bin": {
+    "better-opencode": "./bin/setup.js"
+  },
+  "files": ["dist/", "src/commands/", "src/skills/", "src/agents/", "bin/", "README.md", "opencode.json.example"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Owie6789/better-opencode.git"
+  },
+  "homepage": "https://github.com/Owie6789/better-opencode#readme",
+  "bugs": {
+    "url": "https://github.com/Owie6789/better-opencode/issues"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",

@@ -9,6 +9,7 @@ import { DriftDetector } from "../quiz/driftDetector.js"
 import { scanRepo } from "../quiz/repoScanner.js"
 import { Logger } from "../utils/logger.js"
 import { CacheStore } from "../stores/cacheStore.js"
+import type { VectorStore } from "../rag/vectorStore.js"
 
 export type SelfImproveSubcommand = "status" | "history" | "rollback" | "tune"
 
@@ -21,6 +22,7 @@ export class SelfImproveCommand {
     private readonly cache: CacheStore,
     private readonly logger: Logger = new Logger(false),
     private readonly projectRoot: string = process.cwd(),
+    private readonly vectorStore?: VectorStore,
   ) {}
 
   async execute(sub: SelfImproveSubcommand, args: Record<string, string> = {}): Promise<string> {
@@ -47,6 +49,7 @@ export class SelfImproveCommand {
     const errRate = this.ledger.errorRate().toFixed(2)
     const cacheStats = this.cache.stats()
     const sess = this.session ? `session=${this.session.id} tools=${this.session.getData().toolCallCount}` : "no active session"
+    const vectorCount = this.vectorStore ? this.vectorStore.count() : 0
 
     return [
       "=== self-improve status ===",
@@ -55,6 +58,7 @@ export class SelfImproveCommand {
       `skills T3: ${t3.length} [${t3.slice(0, 5).join(", ")}]`,
       `ledger: ${this.ledger.all().length} entries, errorRate=${errRate}, graph=${graph}`,
       `cache: mem=${cacheStats.memorySize} file=${cacheStats.fileSize}`,
+      `vectorStore: ${vectorCount} chunks indexed`,
       sess,
       `frozen snapshot chars: ${this.instincts.frozenSnapshot().length}/2200`,
     ].join("\n")
@@ -127,6 +131,7 @@ export class SelfImproveCommand {
       ledgerSize: this.ledger.all().length,
       errorRate: this.ledger.errorRate(),
       cache: this.cache.stats(),
+      vectorStoreCount: this.vectorStore ? this.vectorStore.count() : 0,
       lastCurate: this.session?.getData().lastIdleAt ?? null,
       frozenChars: this.instincts.frozenSnapshot().length,
     }

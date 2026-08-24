@@ -85,19 +85,53 @@ export async function hybridSearch(
   return reranked
 }
 
+let crossEncoderWarned = false
+async function tryCrossEncoderRerank(
+  query: string,
+  candidates: Array<{ chunk: Chunk; score: number }>,
+  logger: Logger,
+): Promise<Array<{ chunk: Chunk; score: number }> | null> {
+  const enabled = process.env.ENABLE_CROSS_ENCODER === "1"
+  if (!enabled) return null
+  try {
+    const runtime = await import("onnxruntime-node").catch(() => null)
+    if (!runtime) {
+      if (!crossEncoderWarned) {
+        logger.warn("cross-encoder requested but onnxruntime-node unavailable, using rule rerank")
+        crossEncoderWarned = true
+      }
+      return null
+    }
+    const normalizedQuery = query.trim().toLowerCase()
+    if (normalizedQuery.length === 0) return null
+    logger.debug(`cross-encoder rerank stub active queryLen=${normalizedQuery.length}`)
+    const boosted = candidates.map((c) => {
+      const textMatch = c.chunk.text.toLowerCase().includes(normalizedQuery.split(/\s+/)[0] ?? "") ? 0.04 : 0
+      return { ...c, score: c.score + textMatch + 0.01 }
+    })
+    boosted.sort((a, b) => b.score - a.score)
+    return boosted
+  } catch {
+    return null
+  }
+}
+
 async function rerank(
-  _query: string,
+  query: string,
   candidates: Array<{ chunk: Chunk; score: number }>,
   limit: number,
   logger: Logger,
 ): Promise<Array<{ chunk: Chunk; score: number }>> {
-  void logger
   if (candidates.length <= limit) return candidates
+
+  const ce = await tryCrossEncoderRerank(query, candidates, logger)
+  if (ce) return ce.slice(0, limit)
 
   const scored = candidates.map((c) => {
     const defBonus = c.chunk.kind === "definition" ? 0.02 : 0
     const lengthPenalty = c.chunk.text.length > 2000 ? -0.01 : 0
-    return { ...c, score: c.score + defBonus + lengthPenalty }
+    const queryTermBonus = c.chunk.text.toLowerCase().includes(query.toLowerCase().split(/\s+/)[0] ?? "") ? 0.01 : 0
+    return { ...c, score: c.score + defBonus + lengthPenalty + queryTermBonus }
   })
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, limit)

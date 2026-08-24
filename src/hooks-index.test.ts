@@ -62,22 +62,23 @@ describe("hooks and index", () => {
     const h1 = createSystemTransformHandler(subDeps as any)
     const out1: any = { system: ["base"] }
     await h1({ system: ["base"] }, out1)
-    expect(out1.system.length).toBe(1)
+    expect(out1.system).toHaveLength(1)
 
     // normal with instincts
     deps.instincts.upsert({ id: "i1", text: "prefer strict typescript", score: 5, confidence: 5, hits: 5, successRate: 0.9, tokenDelta: 0, toolCallsDelta: 0, explicitWeight: 0, createdAt: Date.now(), updatedAt: Date.now(), ttlDays: 14, source: "implicit", tags: [] })
     const h2 = createSystemTransformHandler(deps as any)
     const out2: any = { system: ["base"] }
     await h2({ system: ["base"] }, out2)
-    expect(out2.system.length).toBeGreaterThan(1)
+    expect(out2.system).toHaveLength(1)
     expect(out2.system.join("\n")).toContain("instincts")
+    expect(out2.system.join("\n")).toContain("base")
 
     // disabled
     const disabledDeps = { ...deps, config: { ...deps.config, enabled: false } }
     const h3 = createSystemTransformHandler(disabledDeps as any)
     const out3: any = { system: [] }
     await h3({ system: [] }, out3)
-    expect(out3.system.length).toBe(0)
+    expect(out3.system).toHaveLength(0)
 
     rmSync(dir, { recursive: true, force: true })
   })
@@ -91,8 +92,7 @@ describe("hooks and index", () => {
     const h = createSystemTransformHandler(deps as any)
     const out: any = { system: ["base"] }
     await h({ system: ["base"] }, out)
-    // should have RAG + instincts (if any) but at least not throw
-    expect(out.system.length).toBeGreaterThan(0)
+    expect(out.system).toHaveLength(1)
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -102,7 +102,7 @@ describe("hooks and index", () => {
     const h = createMessagesTransformHandler(deps as any)
     const out: any = { messages: [] }
     await h({ messages: [{ role: "user", content: "hi" }] }, out)
-    expect(out.messages.length).toBe(1)
+    expect(out.messages).toHaveLength(1)
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -139,8 +139,8 @@ describe("hooks and index", () => {
     const deps = makeDeps(dir)
     const h = createToolAfterHandler(deps as any)
     await h({ tool: "Read", args: { path: "a" }, result: {}, error: null, durationMs: 10 })
-    expect(deps.ledger.all().length).toBe(1)
-    expect(deps.session.getLedger().length).toBe(1)
+    expect(deps.ledger.all()).toHaveLength(1)
+    expect(deps.session.getLedger()).toHaveLength(1)
     await h({ tool: "Write", args: { file_path: "a.ts" }, result: {}, error: "fail", durationMs: 5 })
     expect(deps.ledger.errorRate()).toBeGreaterThan(0)
     rmSync(dir, { recursive: true, force: true })
@@ -183,7 +183,7 @@ describe("hooks and index", () => {
     await ev({ event: "session.idle", properties: {} })
     await ev({ event: "file.watcher.updated", properties: { path: join(dir, "a.ts") } })
     await ev({ event: "session.compacted", properties: {} })
-    expect(deps.ledger.all().length).toBe(0)
+    expect(deps.ledger.all()).toHaveLength(0)
 
     rmSync(dir, { recursive: true, force: true })
   })

@@ -1,14 +1,27 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
+import { createHash, randomBytes } from "node:crypto"
 import { type Instinct, InstinctSchema } from "../types.js"
 import { Logger } from "../utils/logger.js"
 
 const MAX_CHARS_SNAPSHOT = 2200
 const MAX_CHARS_WORKING = 1375
 
-function instinctsPath(): string {
+function instinctsPath(repoRoot?: string): string {
+  if (repoRoot) {
+    const h = repoHashForPath(repoRoot)
+    return join(homedir(), ".cache", "better-opencode", h, "instincts.json")
+  }
   return join(homedir(), ".cache", "better-opencode", "instincts.json")
+}
+
+function repoHashForPath(p: string): string {
+  return createHash("sha256").update(p, "utf8").digest("hex").slice(0, 12)
+}
+
+export function instinctsPathForRepo(repoRoot: string): string {
+  return instinctsPath(repoRoot)
 }
 
 function ensureDirFor(file: string): void {
@@ -53,12 +66,68 @@ export class InstinctsStore {
     }
   }
 
+  private fsyncFile(path: string): void {
+    try {
+      const fd = openSync(path, "r")
+      try {
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      const isWindows = process.platform === "win32"
+      const tolerated = isWindows || e.code === "EPERM" || e.code === "EINVAL" || e.code === "ENOSYS"
+      if (!tolerated) throw err
+      this.logger.warn("file fsync not supported on this platform, continuing without fsync")
+    }
+  }
+
+  private fsyncDir(dir: string): void {
+    try {
+      const dirFd = openSync(dir, "r")
+      try {
+        fsyncSync(dirFd)
+      } finally {
+        closeSync(dirFd)
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      const isWindows = process.platform === "win32"
+      const tolerated = isWindows || e.code === "EINVAL" || e.code === "EPERM" || e.code === "ENOSYS"
+      if (!tolerated) throw err
+      this.logger.warn("directory fsync not supported on this platform, durability reduced to file fsync only")
+    }
+  }
+
   save(): void {
     ensureDirFor(this.filePath)
     const data = JSON.stringify(this.instincts, null, 2)
-    const tmp = `${this.filePath}.tmp`
+    const nonce = randomBytes(3).toString("hex")
+    const tmp = `${this.filePath}.${process.pid}.${Date.now()}.${nonce}.tmp`
     writeFileSync(tmp, data, "utf8")
-    writeFileSync(this.filePath, data, "utf8")
+    try {
+      this.fsyncFile(tmp)
+    } catch (err) {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp)
+      } catch {}
+      throw err
+    }
+    try {
+      renameSync(tmp, this.filePath)
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      if (e.code !== "ENOENT") throw err
+      try {
+        if (existsSync(tmp)) writeFileSync(this.filePath, data, "utf8")
+      } catch {}
+    } finally {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp)
+      } catch {}
+    }
+    this.fsyncDir(dirname(this.filePath))
   }
 
   all(): Instinct[] {

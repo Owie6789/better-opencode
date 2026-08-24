@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import type { PluginConfig } from "./types.js"
 import { InstinctsStore } from "./stores/instinctsStore.js"
 import { SkillStore } from "./stores/skillStore.js"
@@ -31,12 +32,80 @@ export interface HookDeps {
   projectRoot: string
 }
 
+function partToText(part: unknown): string | null {
+  if (typeof part === "string") return part
+  if (part && typeof part === "object") {
+    const obj = part as Record<string, unknown>
+    const textVal = obj.text
+    if (typeof textVal === "string") return textVal
+    const contentVal = obj.content
+    if (typeof contentVal === "string") return contentVal
+  }
+  return null
+}
+
+function textFromContent(content: unknown): string | null {
+  if (typeof content === "string") {
+    const trimmed = content.trim()
+    return trimmed.length > 0 ? trimmed.slice(0, 4000) : null
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const p of content) {
+      const t = partToText(p)
+      if (t) parts.push(t)
+    }
+    const joined = parts.join("\n").trim()
+    return joined.length > 0 ? joined.slice(0, 4000) : null
+  }
+  const textVal = (content as { text?: unknown } | null)?.text
+  if (typeof textVal === "string") {
+    const trimmed = textVal.trim()
+    if (trimmed.length > 0) return trimmed.slice(0, 4000)
+  }
+  return null
+}
+
+function extractLastUserText(messages: Array<{ role: string; content: unknown }>): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m?.role !== "user") continue
+    const text = textFromContent(m?.content)
+    if (text) return text
+  }
+  return ""
+}
+
+function scoreSkillForQuery(skill: { slug: string; frontmatter: { description: string; tags: string[] }; body: string }, query: string): number {
+  const q = query.toLowerCase()
+  const qTerms = q.split(/\s+/).filter(Boolean)
+  const hay = `${skill.slug} ${skill.frontmatter.description} ${skill.frontmatter.tags.join(" ")} ${skill.body.slice(0, 500)}`.toLowerCase()
+  let score = 0
+  for (const t of qTerms) if (hay.includes(t)) score += 1
+  if (skill.frontmatter.description.toLowerCase().includes(q.slice(0, 40))) score += 2
+  return score
+}
+
+function buildSkillCatalogBlock(skills: ReturnType<SkillStore["listT2"]>, query: string, limit = 3): string {
+  if (skills.length === 0) return ""
+  const scored = skills
+    .map((s) => ({ s, score: query ? scoreSkillForQuery(s as never, query) : 0 }))
+    .sort((a, b) => b.score - a.score)
+  const top = query ? scored.filter((x) => x.score > 0).slice(0, limit) : scored.slice(0, limit)
+  if (top.length === 0) return ""
+  const lines = top.map(({ s }) => {
+    const tagPart = s.frontmatter.tags.length > 0 ? ` [${s.frontmatter.tags.join(",")}]` : ""
+    return `- ${s.slug}: ${s.frontmatter.description.slice(0, 120)}${tagPart}`
+  })
+  return `<available-skills topK="${limit}">\nActive project skills matching your prompt (T2 ${skills.length} total, T3 archived). Prefer these when relevant:\n${lines.join("\n")}\n</available-skills>`
+}
+
 export function createSystemTransformHandler(deps: HookDeps) {
   return async (
     input: { system: string[] },
     output: { system: string[]; abort?: boolean },
   ): Promise<void> => {
-    const { config, instincts, vectorStore, embedder, logger, session } = deps
+    const { config, instincts, skills, logger, session } = deps
 
     if (session.isSubAgent) {
       logger.debug("skip system transform for subagent")
@@ -51,28 +120,30 @@ export function createSystemTransformHandler(deps: HookDeps) {
     }
 
     const snapshot = instincts.frozenSnapshot(config.systemBudget)
+    const pendingSystemInserts: string[] = []
     if (snapshot.length > 0) {
-      const text = `<instincts budget=\"${config.systemBudget}\">\n${snapshot}\n</instincts>`
-      output.system.push(text)
-      logger.debug(`injected instincts ${snapshot.length} chars`)
+      pendingSystemInserts.push(`<instincts budget="${config.systemBudget}">\n${snapshot}\n</instincts>`)
+      logger.debug(`prepared instincts ${snapshot.length} chars`)
     }
 
     try {
-      const lastUserMsg = ""
-      if (lastUserMsg || vectorStore.count() > 0) {
-        const query = lastUserMsg || "project context"
-        const hits = await hybridSearch(query, vectorStore, embedder, { limit: 6, rrfK: 60 }, logger).catch(() => [])
-        if (hits.length > 0) {
-          const ragText = selectForInjection(hits, config.ragTokenBudget)
-          if (ragText.length > 0) {
-            const scrubbed = scrubSecrets(ragText)
-            output.system.push(scrubbed)
-            logger.debug(`injected RAG ${scrubbed.length} chars from ${hits.length} hits`)
-          }
+      const allSkills = skills.listT2()
+      if (allSkills.length > 0) {
+        const catalog = buildSkillCatalogBlock(allSkills, "", 5)
+        if (catalog.length > 0) {
+          pendingSystemInserts.push(catalog)
+          logger.debug(`prepared catalog ${allSkills.length} skills`)
         }
       }
     } catch (err) {
-      logger.warn("RAG injection failed", err)
+      logger.warn("catalog injection failed", err)
+    }
+
+    if (pendingSystemInserts.length > 0) {
+      const merged = pendingSystemInserts.join("\n\n")
+      if (output.system.length === 0) output.system.push(merged)
+      else output.system[0] = `${output.system[0]}\n\n${merged}`
+      logger.debug(`injected system merge ${merged.length} chars into primary block (Qwen compat, was ${pendingSystemInserts.length} inserts)`)
     }
 
     const afterLen = output.system.join("\n").length
@@ -85,9 +156,46 @@ export function createMessagesTransformHandler(deps: HookDeps) {
     input: { messages: Array<{ role: string; content: unknown }> },
     output: { messages: Array<{ role: string; content: unknown }> },
   ): Promise<void> => {
-    void deps
-    void input
-    output.messages = [...input.messages]
+    const { config, vectorStore, embedder, skills, logger, session } = deps
+    output.messages.splice(0, output.messages.length, ...input.messages)
+
+    if (session.isSubAgent || !config.enabled) return
+
+    const query = extractLastUserText(input.messages)
+    if (!query) {
+      logger.debug("messages transform: no user query")
+      return
+    }
+
+    const pending: string[] = []
+
+    try {
+      if (vectorStore.count() > 0) {
+        const hits = await hybridSearch(query, vectorStore, embedder, { limit: 3, rrfK: 60 }, logger).catch(() => [])
+        if (hits.length > 0) {
+          const ragText = selectForInjection(hits, config.ragTokenBudget)
+          if (ragText.length > 0) pending.push(scrubSecrets(ragText))
+        }
+      }
+    } catch (err) {
+      logger.warn("messages RAG failed", err)
+    }
+
+    try {
+      const allSkills = skills.listT2()
+      const catalog = buildSkillCatalogBlock(allSkills, query, 3)
+      if (catalog.length > 0) pending.push(catalog)
+    } catch (err) {
+      logger.warn("messages catalog failed", err)
+    }
+
+    if (pending.length > 0) {
+      const merged = pending.join("\n\n")
+      const injection = { role: "system" as const, content: merged } as unknown as { role: string; content: unknown }
+      const insertAt = output.messages.length > 0 ? output.messages.length - 1 : 0
+      output.messages.splice(insertAt, 0, injection)
+      logger.debug(`messages transform injected ${merged.length} chars topK 3 at ${insertAt} query='${query.slice(0, 40)}'`)
+    }
   }
 }
 
@@ -154,7 +262,7 @@ export function createToolAfterHandler(deps: HookDeps) {
   }): Promise<void> => {
     const { session, ledger, logger } = deps
     const entry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `${Date.now()}-${randomBytes(3).toString("hex")}`,
       timestamp: Date.now(),
       tool: input.tool,
       input: input.args,

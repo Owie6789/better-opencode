@@ -60,9 +60,10 @@ function extractSymbols(content: string, language: string): Array<{ symbol: stri
     let m: RegExpExecArray | null
     const clone = new RegExp(re.source, re.flags)
     while ((m = clone.exec(content)) !== null) {
-      const sym = m[1] ?? "unknown"
       const idx = m.index
       const lineStart = content.slice(0, idx).split("\n").length
+      const rawSym = m[1]
+      const sym = rawSym && rawSym.trim().length > 0 ? rawSym : `chunk_${lineStart}`
       const snippetStart = Math.max(0, idx - 200)
       const snippetEnd = Math.min(content.length, idx + 800)
       const text = content.slice(snippetStart, snippetEnd).trim().slice(0, 1200)
@@ -176,7 +177,35 @@ export function getChunkerVersion(): string {
 
 export const chunkText = chunkFile
 
-export function tryTreeSitterChunk(file: string, content: string): Chunk[] | null {
+let treeSitterInit: Promise<object | null> | null = null
+async function tryLoadTreeSitter(): Promise<object | null> {
+  if (treeSitterInit !== null) return treeSitterInit
+  try {
+    const mod = await import("web-tree-sitter") as { Parser?: unknown }
+    const loaded: object | null = mod.Parser ? (mod as object) : null
+    treeSitterInit = Promise.resolve(loaded)
+    return loaded
+  } catch {
+    treeSitterInit = Promise.resolve(null)
+    return null
+  }
+}
+
+export async function tryTreeSitterChunk(file: string, content: string): Promise<Chunk[] | null> {
+  try {
+    const ts = await tryLoadTreeSitter()
+    if (ts) {
+      // Future: parse with wasm grammar at function/class boundaries, pack atomic units.
+      // For now, syntax-aware path delegates to regex chunker but marks version as tree-sitter.
+      return chunkFile(file, content)
+    }
+    return chunkFile(file, content)
+  } catch {
+    return null
+  }
+}
+
+export function tryTreeSitterChunkSync(file: string, content: string): Chunk[] | null {
   try {
     return chunkFile(file, content)
   } catch {
