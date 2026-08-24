@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { withFileLock, withFileLockSync, ensureDir, createLockFile, isLockStale, claimStaleLock, refreshLockFile, releaseLockFile } from "./utils/lock.js"
+import { withFileLock, withFileLockSync, ensureDir, createLockFile, isLockStale, claimStaleLock, refreshLockFile, releaseLockFile, tryStaleClaim, sleepSyncMs } from "./utils/lock.js"
 import { getConfig, getCacheDir, getInstinctsPath, getSkillsLibraryDir } from "./config.js"
 import { FingerprintStore } from "./stores/fingerprint.js"
 import { SkillStore } from "./stores/skillStore.js"
@@ -66,6 +66,30 @@ describe("coverage boost", () => {
       return inner + 1
     })
     expect(outer).toBe(124)
+    expect(tryStaleClaim(join(dir, "nope.lock"), "o2", 10_000)).toBe(false)
+    sleepSyncMs(1)
+    const staleLock = join(dir, "stale-try.lock")
+    writeFileSync(staleLock, "oldOwner")
+    utimesSync(staleLock, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
+    expect(tryStaleClaim(staleLock, "newOwner", 10_000)).toBe(true)
+    expect(readFileSync(staleLock, "utf8")).toBe("newOwner")
+    const contested = join(dir, "contested.lock")
+    writeFileSync(contested, "a")
+    utimesSync(contested, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
+    const origClaim = claimStaleLock(contested, "b", 10_000)
+    expect(typeof origClaim).toBe("boolean")
+    const staleForWithLock = join(dir, "stale-wl.lock")
+    writeFileSync(staleForWithLock, "old")
+    utimesSync(staleForWithLock, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
+    const wlRes = await withFileLock(staleForWithLock, async () => 77)
+    expect(wlRes).toBe(77)
+    expect(existsSync(staleForWithLock)).toBe(false)
+    const staleForSync = join(dir, "stale-sync.lock")
+    writeFileSync(staleForSync, "oldSync")
+    utimesSync(staleForSync, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
+    const syncRes2 = withFileLockSync(staleForSync, () => 88)
+    expect(syncRes2).toBe(88)
+    expect(existsSync(staleForSync)).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
 

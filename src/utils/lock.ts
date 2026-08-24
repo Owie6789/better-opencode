@@ -150,7 +150,7 @@ export function releaseLockFile(lockPath: string, ownerId: string): void {
   }
 }
 
-function tryStaleClaim(lockPath: string, ownerId: string, staleMs: number): boolean {
+export function tryStaleClaim(lockPath: string, ownerId: string, staleMs: number): boolean {
   if (!isLockStale(lockPath, staleMs)) return false
   if (!claimStaleLock(lockPath, ownerId, staleMs)) return false
   try {
@@ -160,7 +160,7 @@ function tryStaleClaim(lockPath: string, ownerId: string, staleMs: number): bool
   }
 }
 
-function sleepSyncMs(ms: number): void {
+export function sleepSyncMs(ms: number): void {
   try {
     const sab = new SharedArrayBuffer(4)
     const arr = new Int32Array(sab)
