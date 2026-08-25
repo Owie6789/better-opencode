@@ -1,5 +1,4 @@
 import type { Chunk } from "../types.js"
-import { createRequire } from "node:module"
 import { cosineSimilarity } from "./embedder.js"
 import { Logger } from "../utils/logger.js"
 
@@ -107,20 +106,6 @@ export class MemoryVectorStore implements VectorStore {
   }
 }
 
-let sqliteVecAvailable: boolean | null = null
-function checkSqliteVec(): boolean {
-  if (sqliteVecAvailable !== null) return sqliteVecAvailable
-  try {
-    const rq = createRequire(import.meta.url)
-    rq("better-sqlite3")
-    rq("sqlite-vec")
-    sqliteVecAvailable = true
-  } catch {
-    sqliteVecAvailable = false
-  }
-  return sqliteVecAvailable
-}
-
 export class SqliteVecVectorStore implements VectorStore {
   private readonly mem = new MemoryVectorStore()
   private readonly logger: Logger
@@ -153,16 +138,7 @@ export class SqliteVecVectorStore implements VectorStore {
 
 export function createVectorStore(kind: string, logger?: Logger, opts?: { dbPath?: string }): VectorStore {
   if (kind === "sqlite-vec") {
-    if (checkSqliteVec()) {
-      if (opts?.dbPath && opts.dbPath !== ":memory:") {
-        logger?.warn(`sqlite-vec persistence not yet wired for ${opts.dbPath}, using MemoryVectorStore fallback (WAL+vec0 deferred)`)
-        return new MemoryVectorStore(logger)
-      }
-      logger?.warn("sqlite-vec available but persistence not yet wired, using MemoryVectorStore fallback (claiming WAL+vec0 deferred)")
-      return new MemoryVectorStore(logger)
-    }
-    logger?.warn("sqlite-vec requested but native extension unavailable (Bun/macOS or missing better-sqlite3), falling back to MemoryVectorStore")
-    return new MemoryVectorStore(logger)
+    return new SqliteVecVectorStore(opts?.dbPath ?? ":memory:", logger)
   }
   if (kind === "lancedb") {
     logger?.info("lancedb not yet wired, using MemoryVectorStore")

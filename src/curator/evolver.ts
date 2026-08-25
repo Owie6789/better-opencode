@@ -3,7 +3,6 @@ import type { Instinct } from "../types.js"
 import { SessionState } from "../state/sessionState.js"
 import { InstinctsStore } from "../stores/instinctsStore.js"
 import { Logger } from "../utils/logger.js"
-import { withFileLock, withFileLockSync } from "../utils/lock.js"
 
 export interface EvolverOpts {
   confidenceThreshold: number
@@ -40,96 +39,93 @@ export class Evolver {
     const ledger = session.getLedger()
     if (ledger.length < 3) return []
 
-    const lockPath = this.instincts.lockPath
-    let result: Instinct[] = []
-    withFileLockSync(lockPath, () => {
-      ;(this.instincts as unknown as { loaded: boolean }).loaded = false
-      this.instincts.load()
-      const errorFixPairs = session.getErrorFixPairs()
-      const candidates: Instinct[] = []
-
-      if (errorFixPairs.length > 0) {
-        for (const pair of errorFixPairs.slice(-3)) {
-          const text = this.synthesizeErrorFix(pair)
-          if (!text) continue
-          const id = createHash("sha256").update(text).digest("hex").slice(0, 12)
-          const existing = this.instincts.findById(id)
-          const inst: Instinct = existing
-            ? {
-                ...existing,
-                hits: existing.hits + 1,
-                successRate: Math.min(1, existing.successRate + 0.1),
-                updatedAt: Date.now(),
-                score: this.scoreInstinct({ ...existing, hits: existing.hits + 1 }),
-              }
-            : {
-                id,
-                text,
-                score: 2.5,
-                confidence: 3.5,
-                hits: 1,
-                successRate: 0.7,
-                tokenDelta: 0,
-                toolCallsDelta: 1,
-                explicitWeight: 0,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-                ttlDays: 14,
-                source: "implicit",
-                tags: ["error-fix", pair.errorTool],
-              }
-          candidates.push(inst)
+    try {
+      return this.instincts.mutate(() => {
+        const candidates = this.collectCandidates(session, ledger)
+        const persisted: Instinct[] = []
+        for (const inst of candidates) {
+          const { score } = this.evaluate(inst)
+          const scored: Instinct = { ...inst, score, confidence: score }
+          this.instincts.upsert(scored)
+          persisted.push(scored)
+          this.logger.info(`Curated instinct ${scored.id} score=${score.toFixed(2)} "${scored.text.slice(0, 60)}"`)
         }
-      }
+        return persisted.filter((i) => this.evaluate(i).promote)
+      })
+    } catch (err) {
+      this.logger.warn("Curate skipped", err)
+      return []
+    }
+  }
 
-      const toolGraph = this.buildToolGraphSummary(ledger)
-      if (toolGraph) {
-        const id = createHash("sha256").update(toolGraph).digest("hex").slice(0, 12)
+  private collectCandidates(session: SessionState, ledger: { tool: string }[]): Instinct[] {
+    const candidates: Instinct[] = []
+    const errorFixPairs = session.getErrorFixPairs()
+
+    if (errorFixPairs.length > 0) {
+      for (const pair of errorFixPairs.slice(-3)) {
+        const text = this.synthesizeErrorFix(pair)
+        if (!text) continue
+        const id = createHash("sha256").update(text).digest("hex").slice(0, 12)
         const existing = this.instincts.findById(id)
-        if (!existing) {
-          candidates.push({
-            id,
-            text: toolGraph,
-            score: 2.0,
-            confidence: 3.0,
-            hits: 1,
-            successRate: 0.65,
-            tokenDelta: session.getData().tokenUsage.total,
-            toolCallsDelta: ledger.length,
-            explicitWeight: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            ttlDays: 14,
-            source: "implicit",
-            tags: ["tool-graph"],
-          })
-        }
+        const inst: Instinct = existing
+          ? {
+              ...existing,
+              hits: existing.hits + 1,
+              successRate: Math.min(1, existing.successRate + 0.1),
+              updatedAt: Date.now(),
+              score: this.scoreInstinct({ ...existing, hits: existing.hits + 1 }),
+            }
+          : {
+              id,
+              text,
+              score: 2.5,
+              confidence: 3.5,
+              hits: 1,
+              successRate: 0.7,
+              tokenDelta: 0,
+              toolCallsDelta: 1,
+              explicitWeight: 0,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              ttlDays: 14,
+              source: "implicit",
+              tags: ["error-fix", pair.errorTool],
+            }
+        candidates.push(inst)
       }
+    }
 
-      const toPersist: Instinct[] = []
-      for (const inst of candidates) {
-        const { score } = this.evaluate(inst)
-        const scored: Instinct = { ...inst, score, confidence: score }
-        this.instincts.upsertWithoutLock(scored)
-        toPersist.push(scored)
-        this.logger.info(`Curated instinct ${scored.id} score=${score.toFixed(2)} "${scored.text.slice(0, 60)}"`)
+    const toolGraph = this.buildToolGraphSummary(ledger)
+    if (toolGraph) {
+      const id = createHash("sha256").update(toolGraph).digest("hex").slice(0, 12)
+      const existing = this.instincts.findById(id)
+      if (!existing) {
+        candidates.push({
+          id,
+          text: toolGraph,
+          score: 2.0,
+          confidence: 3.0,
+          hits: 1,
+          successRate: 0.65,
+          tokenDelta: session.getData().tokenUsage.total,
+          toolCallsDelta: ledger.length,
+          explicitWeight: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          ttlDays: 14,
+          source: "implicit",
+          tags: ["tool-graph"],
+        })
       }
+    }
 
-      result = toPersist.filter((i) => this.evaluate(i).promote)
-    })
-    return result
+    return candidates
   }
 
   async curateAsync(session: SessionState): Promise<Instinct[]> {
-    const ledger = session.getLedger()
-    if (ledger.length < 3) return []
-    const lockPath = this.instincts.lockPath
-    return await withFileLock(lockPath, async () => {
-      ;(this.instincts as unknown as { loaded: boolean }).loaded = false
-      this.instincts.load()
-      const res = this.curate(session)
-      return res
-    })
+    if (session.getLedger().length < 3) return []
+    return this.curate(session)
   }
 
   private synthesizeErrorFix(pair: { errorMessage: string; errorTool: string; fixTool: string; fixFile?: string }): string | null {

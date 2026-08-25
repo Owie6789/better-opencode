@@ -11,7 +11,7 @@ import { Logger } from "../utils/logger.js"
 import { CacheStore } from "../stores/cacheStore.js"
 import type { VectorStore } from "../rag/vectorStore.js"
 
-export type SelfImproveSubcommand = "status" | "history" | "rollback" | "tune"
+export type SelfImproveSubcommand = "status" | "history" | "rollback" | "tune" | "health"
 
 export class SelfImproveCommand {
   constructor(
@@ -35,6 +35,8 @@ export class SelfImproveCommand {
         return this.rollback(args.slug ?? "", args.version ? Number(args.version) : undefined)
       case "tune":
         return this.tune()
+      case "health":
+        return JSON.stringify(this.health(), null, 2)
       default:
         return this.help()
     }

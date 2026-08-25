@@ -1,28 +1,21 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync, unlinkSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { homedir } from "node:os"
-import { createHash, randomBytes } from "node:crypto"
+import { dirname } from "node:path"
+import { randomBytes } from "node:crypto"
 import { type Instinct, InstinctSchema } from "../types.js"
 import { Logger } from "../utils/logger.js"
 import { withFileLockSync } from "../utils/lock.js"
+import { getInstinctsPath } from "../config.js"
 
 const MAX_CHARS_SNAPSHOT = 2200
 const MAX_CHARS_WORKING = 1375
 
-function instinctsPath(repoRoot?: string): string {
-  if (repoRoot) {
-    const h = repoHashForPath(repoRoot)
-    return join(homedir(), ".cache", "better-opencode", h, "instincts.json")
-  }
-  return join(homedir(), ".cache", "better-opencode", "instincts.json")
-}
-
-function repoHashForPath(p: string): string {
-  return createHash("sha256").update(p, "utf8").digest("hex").slice(0, 12)
-}
+// A mutate callback can include disk read, JSON parse, mutation, serialize and
+// fsync; the lease must outlive all of it or another process could claim the
+// stale lock mid-callback.
+const MUTATE_LEASE_MS = 60_000
 
 export function instinctsPathForRepo(repoRoot: string): string {
-  return instinctsPath(repoRoot)
+  return getInstinctsPath(repoRoot)
 }
 
 function ensureDirFor(file: string): void {
@@ -35,7 +28,7 @@ export class InstinctsStore {
   private loaded = false
 
   constructor(
-    private readonly filePath: string = instinctsPath(),
+    private readonly filePath: string = getInstinctsPath(),
     private readonly logger: Logger = new Logger(false),
     private readonly maxInstincts = 200,
   ) {}
@@ -44,8 +37,9 @@ export class InstinctsStore {
     return `${this.filePath}.lock`
   }
 
-  get lockFilePath(): string {
-    return this.lockPath
+  reload(): void {
+    this.loaded = false
+    this.load()
   }
 
   load(): Instinct[] {
@@ -128,9 +122,8 @@ export class InstinctsStore {
     } catch (err) {
       const e = err as NodeJS.ErrnoException
       if (e.code !== "ENOENT") throw err
-      try {
-        if (existsSync(tmp)) writeFileSync(this.filePath, data, "utf8")
-      } catch {}
+      mkdirSync(dirname(this.filePath), { recursive: true })
+      renameSync(tmp, this.filePath)
     } finally {
       try {
         if (existsSync(tmp)) unlinkSync(tmp)
@@ -140,15 +133,32 @@ export class InstinctsStore {
   }
 
   save(): void {
-    withFileLockSync(this.lockPath, () => this.saveInternal())
+    withFileLockSync(this.lockPath, () => {
+      const pending = [...this.instincts]
+      this.reload()
+      const byId = new Map(this.instincts.map((i) => [i.id, i]))
+      for (const p of pending) byId.set(p.id, p)
+      this.instincts = [...byId.values()]
+      this.enforceCap()
+      this.saveInternal()
+    })
   }
 
   mutate<T>(fn: () => T): T {
-    return withFileLockSync(this.lockPath, () => {
-      this.loaded = false
-      this.load()
-      return fn()
-    })
+    return withFileLockSync(
+      this.lockPath,
+      () => {
+        this.reload()
+        try {
+          return fn()
+        } catch (err) {
+          this.loaded = false
+          this.instincts = []
+          throw err
+        }
+      },
+      { staleMs: MUTATE_LEASE_MS },
+    )
   }
 
   all(): Instinct[] {
@@ -168,15 +178,6 @@ export class InstinctsStore {
 
   upsert(instinct: Instinct): void {
     this.add(instinct)
-  }
-
-  upsertWithoutLock(instinct: Instinct): void {
-    const parsed = InstinctSchema.parse(instinct)
-    const idx = this.instincts.findIndex((i) => i.id === parsed.id)
-    if (idx >= 0) this.instincts[idx] = parsed
-    else this.instincts.push(parsed)
-    this.enforceCap()
-    this.saveInternal()
   }
 
   remove(id: string): boolean {

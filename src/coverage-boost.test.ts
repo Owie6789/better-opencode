@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, utimesSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { withFileLock, withFileLockSync, ensureDir, createLockFile, isLockStale, claimStaleLock, refreshLockFile, releaseLockFile, tryStaleClaim, sleepSyncMs } from "./utils/lock.js"
+import { withFileLock, withFileLockSync, ensureDir, createLockFile, isLockStale, claimStaleLock, refreshLockFile, releaseLockFile, tryStaleClaim } from "./utils/lock.js"
 import { getConfig, getCacheDir, getInstinctsPath, getSkillsLibraryDir } from "./config.js"
 import { FingerprintStore } from "./stores/fingerprint.js"
 import { SkillStore } from "./stores/skillStore.js"
@@ -15,8 +15,8 @@ import { CacheStore } from "./stores/cacheStore.js"
 import { SessionState } from "./state/sessionState.js"
 import { scanRepo } from "./quiz/repoScanner.js"
 import { HashEmbedder, LocalOnnxEmbedder, VoyageEmbedder, HybridEmbedder, createEmbedder, cosineSimilarity } from "./rag/embedder.js"
-import { IndexService } from "./rag/indexer.js"
-import { MemoryVectorStore, createVectorStore } from "./rag/vectorStore.js"
+import { IndexService, cacheDirForRepo } from "./rag/indexer.js"
+import { MemoryVectorStore, SqliteVecVectorStore, createVectorStore } from "./rag/vectorStore.js"
 import { Logger } from "./utils/logger.js"
 
 describe("coverage boost", () => {
@@ -67,7 +67,6 @@ describe("coverage boost", () => {
     })
     expect(outer).toBe(124)
     expect(tryStaleClaim(join(dir, "nope.lock"), "o2", 10_000)).toBe(false)
-    sleepSyncMs(1)
     const staleLock = join(dir, "stale-try.lock")
     writeFileSync(staleLock, "oldOwner")
     utimesSync(staleLock, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
@@ -76,8 +75,8 @@ describe("coverage boost", () => {
     const contested = join(dir, "contested.lock")
     writeFileSync(contested, "a")
     utimesSync(contested, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
-    const origClaim = claimStaleLock(contested, "b", 10_000)
-    expect(typeof origClaim).toBe("boolean")
+    expect(claimStaleLock(contested, "b", 10_000)).toBe(true)
+    expect(readFileSync(contested, "utf8")).toBe("b")
     const staleForWithLock = join(dir, "stale-wl.lock")
     writeFileSync(staleForWithLock, "old")
     utimesSync(staleForWithLock, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000))
@@ -248,42 +247,50 @@ describe("coverage boost", () => {
     expect(res.indexed).toBeGreaterThan(0)
     const upd = await idx.updateFile(dir, "a.ts")
     expect(upd).toBeGreaterThan(0)
-    expect(idx.cacheDirForRepo(dir).includes(".cache")).toBe(true)
+    expect(cacheDirForRepo(dir).includes(join(".cache", "better-opencode", "index"))).toBe(true)
+    expect(existsSync(join(cacheDirForRepo(dir), ".indexed"))).toBe(true)
     rmSync(dir, { recursive: true, force: true })
+    rmSync(cacheDirForRepo(dir), { recursive: true, force: true })
   })
 
   it("vectorStore factory", async () => {
     const mem = createVectorStore("memory")
     expect(mem.count()).toBe(0)
-    const fallback = createVectorStore("sqlite-vec" as any)
-    expect(fallback).toBeDefined()
+    const wrapped = createVectorStore("sqlite-vec" as any)
+    expect(wrapped).toBeInstanceOf(SqliteVecVectorStore)
   })
 
-  it("chunker tree-sitter fallback and hybridSearch cross-encoder stub", async () => {
-    const { tryTreeSitterChunk, tryTreeSitterChunkSync } = await import("./rag/chunker.js")
-    const { hybridSearch } = await import("./rag/hybridSearch.js")
+  it("chunker fallback and hybridSearch cross-encoder stub", async () => {
+    const { tryTreeSitterChunk } = await import("./rag/chunker.js")
+    const { hybridSearch, resetCrossEncoderStateForTests } = await import("./rag/hybridSearch.js")
     const logger = new Logger(true)
-    const syncRes = tryTreeSitterChunkSync("a.ts", "function foo(){}", logger)
-    expect(syncRes && syncRes.length).toBeGreaterThan(0)
-    const asyncRes = await tryTreeSitterChunk("a.ts", "function bar(){}", logger)
-    expect(asyncRes && asyncRes.length).toBeGreaterThan(0)
+    const asyncRes = await tryTreeSitterChunk("a.ts", "function bar(){}")
+    expect(asyncRes.length).toBeGreaterThan(0)
     const vs = new MemoryVectorStore()
     const emb = new HashEmbedder()
     const texts = ["function calculate sum", "hello world unrelated", "calculate sum function", "another calculate", "yet another sum", "extra"]
     const vecs = await emb.embed(texts)
     await vs.upsert(texts.map((t, i) => ({ id: `id${i}`, file: `f${i}.ts`, language: "ts", symbol: null, kind: "chunk", lines: [1, 1] as [number, number], hash: `h${i}`, text: t, embedding: vecs[i] })))
-    const prev = process.env.ENABLE_CROSS_ENCODER
-    process.env.ENABLE_CROSS_ENCODER = "1"
-    delete process.env.CROSS_ENCODER_MODEL_PATH
-    const hits = await hybridSearch("calculate sum", vs, emb, { limit: 2 }, logger)
-    expect(hits.length).toBeGreaterThan(0)
-    process.env.ENABLE_CROSS_ENCODER = "1"
-    process.env.CROSS_ENCODER_MODEL_PATH = "/tmp/nonexistent-model.onnx"
-    const hits2 = await hybridSearch("calculate sum", vs, emb, { limit: 2 }, logger)
-    expect(hits2.length).toBeGreaterThan(0)
-    if (prev === undefined) delete process.env.ENABLE_CROSS_ENCODER
-    else process.env.ENABLE_CROSS_ENCODER = prev
-    delete process.env.CROSS_ENCODER_MODEL_PATH
+    const prevCE = process.env.ENABLE_CROSS_ENCODER
+    const prevModel = process.env.CROSS_ENCODER_MODEL_PATH
+    try {
+      process.env.ENABLE_CROSS_ENCODER = "1"
+      delete process.env.CROSS_ENCODER_MODEL_PATH
+      resetCrossEncoderStateForTests()
+      const hits = await hybridSearch("calculate sum", vs, emb, { limit: 2 }, logger)
+      expect(hits).toHaveLength(2)
+      expect(hits[0]!.score).toBeGreaterThanOrEqual(hits[1]!.score)
+      process.env.CROSS_ENCODER_MODEL_PATH = "/tmp/nonexistent-model.onnx"
+      resetCrossEncoderStateForTests()
+      const hits2 = await hybridSearch("calculate sum", vs, emb, { limit: 2 }, logger)
+      expect(hits2).toHaveLength(2)
+      expect(hits2[0]!.chunk.id).toBe(hits[0]!.chunk.id)
+    } finally {
+      if (prevCE === undefined) delete process.env.ENABLE_CROSS_ENCODER
+      else process.env.ENABLE_CROSS_ENCODER = prevCE
+      if (prevModel === undefined) delete process.env.CROSS_ENCODER_MODEL_PATH
+      else process.env.CROSS_ENCODER_MODEL_PATH = prevModel
+    }
   })
 
   it("injectionScanner AWS secret patterns", async () => {
@@ -301,10 +308,11 @@ describe("coverage boost", () => {
     const base = { id: "t1", text: "test lock", score: 5, confidence: 5, hits: 2, successRate: 0.8, tokenDelta: 0, toolCallsDelta: 0, explicitWeight: 0, createdAt: now, updatedAt: now, ttlDays: 14, source: "implicit" as const, tags: [] as string[] }
     store.add(base)
     expect(store.findById("t1")?.text).toBe("test lock")
-    store.upsertWithoutLock({ ...base, text: "updated via withoutLock" })
-    expect(store.findById("t1")?.text).toBe("updated via withoutLock")
+    store.mutate(() => {
+      store.upsert({ ...base, text: "updated via mutate" })
+    })
+    expect(store.findById("t1")?.text).toBe("updated via mutate")
     expect(store.lockPath.endsWith(".lock")).toBe(true)
-    expect(store.lockFilePath.endsWith(".lock")).toBe(true)
     rmSync(dir, { recursive: true, force: true })
   })
 })

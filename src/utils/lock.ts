@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, writeFileSync, utimesSync, fsyncSync, renameSync } from "node:fs"
-import { dirname } from "node:path"
+import { openSync, writeSync, closeSync, unlinkSync, statSync, readFileSync, utimesSync, writeFileSync, renameSync, linkSync, existsSync, mkdirSync } from "node:fs"
 import { randomBytes } from "node:crypto"
+import { dirname } from "node:path"
 import { AsyncLocalStorage } from "node:async_hooks"
 
 const lockAsyncStorage = new AsyncLocalStorage<Set<string>>()
@@ -36,7 +36,7 @@ export function isLockStale(lockPath: string, staleMs: number): boolean {
   }
 }
 
-export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_000): boolean { // NOSONAR - atomic stale takeover intentionally branches for POSIX/Windows fsync+rename
+export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_000): boolean {
   let contentBefore = ""
   let mtimeBefore = 0
   try {
@@ -48,94 +48,65 @@ export function claimStaleLock(lockPath: string, ownerId: string, staleMs = 10_0
   }
   if (contentBefore === ownerId) return false
   if (Date.now() - mtimeBefore <= staleMs) return false
+
+  // Atomic take: rename moves the stale lock out of the namespace, so exactly
+  // one concurrent claimant can succeed; every loser observes ENOENT.
+  const quarantine = `${lockPath}.${randomBytes(4).toString("hex")}.stale`
   try {
-    const stAfter = statSync(lockPath)
-    const contentAfter = readFileSync(lockPath, "utf8")
-    if (contentAfter !== contentBefore) return false
-    if (stAfter.mtimeMs !== mtimeBefore) return false
+    renameSync(lockPath, quarantine)
   } catch {
-    // concurrent takeover or already removed
     return false
   }
-  const tmpPath = `${lockPath}.tmp.${ownerId}.${randomBytes(2).toString("hex")}`
+
+  let moved: string | null = null
   try {
-    writeFileSync(tmpPath, ownerId, "utf8")
-    try {
-      const stFinal = statSync(lockPath)
-      const contentFinal = readFileSync(lockPath, "utf8")
-      if (contentFinal !== contentBefore) {
-        unlinkSync(tmpPath)
-        return false
-      }
-      if (stFinal.mtimeMs !== mtimeBefore) {
-        unlinkSync(tmpPath)
-        return false
-      }
-    } catch {
-      unlinkSync(tmpPath)
-      return false
-    }
-    try {
-      renameSync(tmpPath, lockPath)
-    } catch {
+    moved = readFileSync(quarantine, "utf8")
+  } catch {
+    // quarantine vanished under us
+    moved = null
+  }
+  if (moved !== contentBefore) {
+    if (moved !== null) {
       try {
-        unlinkSync(lockPath)
-      } catch {
+        const fd = openSync(lockPath, "wx")
         try {
-          unlinkSync(tmpPath)
-        } catch {
-          // ignore tmp cleanup after failed unlink
+          writeSync(fd, moved)
+        } finally {
+          closeSync(fd)
         }
-        return false
+      } catch {
+        // best-effort restore of a foreign lock
       }
-      renameSync(tmpPath, lockPath)
     }
     try {
-      const fd = openSync(lockPath, "r")
-      try {
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
-      }
-    } catch {
-      // ignore fsync best-effort after claim
-    }
-    try {
-      utimesSync(lockPath, new Date(), new Date())
-    } catch {
-      // ignore utimes best-effort
-    }
+      unlinkSync(quarantine)
+    } catch {}
+    return false
+  }
+  try {
+    unlinkSync(quarantine)
+  } catch {}
+
+  // Publish with an exclusive create: if a competing owner recreated the lock
+  // between take and publish they win via EEXIST instead of being clobbered.
+  const tmpClaim = `${lockPath}.${randomBytes(4).toString("hex")}.claim`
+  writeFileSync(tmpClaim, ownerId)
+  try {
+    linkSync(tmpClaim, lockPath)
     return true
   } catch {
-    try {
-      unlinkSync(tmpPath)
-    } catch {
-      // ignore tmp cleanup
-    }
     return false
+  } finally {
+    try {
+      unlinkSync(tmpClaim)
+    } catch {}
   }
 }
 
 export function refreshLockFile(lockPath: string, ownerId: string): void {
   try {
-    const cur = readFileSync(lockPath, "utf8")
-    if (cur !== ownerId) return
-    writeFileSync(lockPath, ownerId, "utf8")
-    try {
-      const fd = openSync(lockPath, "r")
-      try {
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
-      }
-    } catch {
-      // ignore fsync best-effort
-    }
-    try {
-      utimesSync(lockPath, new Date(), new Date())
-    } catch {
-      // ignore utimes best-effort
-    }
+    if (readFileSync(lockPath, "utf8") !== ownerId) return
+    utimesSync(lockPath, new Date(), new Date())
   } catch {
     // missing lock during refresh
   }
@@ -188,11 +159,6 @@ function buildOwnerId(): string {
   return `${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}`
 }
 
-function ensureLockDir(lockPath: string): void {
-  const dir = dirname(lockPath)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-}
-
 function touchAfterCas(lockPath: string): void {
   try {
     utimesSync(lockPath, new Date(), new Date())
@@ -204,7 +170,7 @@ function touchAfterCas(lockPath: string): void {
 export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>, opts?: LockOptions): Promise<T> {
   const existingStore = lockAsyncStorage.getStore()
   if (existingStore?.has(lockPath)) return await fn()
-  ensureLockDir(lockPath)
+  ensureDirFor(lockPath)
   const ownerId = buildOwnerId()
   const start = Date.now()
   const { timeoutMs, staleMs } = resolveLockOptions(opts)
@@ -233,10 +199,13 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>, op
   }
 }
 
+// Blocking acquisition for sync callbacks. The callback cannot refresh the
+// lease while it runs; if it outlives staleMs another process may take over
+// via claimStaleLock. Keep sync work short or use withFileLock instead.
 export function withFileLockSync<T>(lockPath: string, fn: () => T, opts?: LockOptions): T {
   const existingStore = lockAsyncStorage.getStore()
   if (existingStore?.has(lockPath)) return fn()
-  ensureLockDir(lockPath)
+  ensureDirFor(lockPath)
   const ownerId = buildOwnerId()
   const start = Date.now()
   const { timeoutMs, staleMs } = resolveLockOptions(opts)
@@ -261,4 +230,8 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T, opts?: LockOp
 
 export function ensureDir(path: string): void {
   if (!existsSync(path)) mkdirSync(path, { recursive: true })
+}
+
+export function ensureDirFor(filePath: string): void {
+  ensureDir(dirname(filePath))
 }

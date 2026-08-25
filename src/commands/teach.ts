@@ -57,7 +57,7 @@ export class TeachCommand {
             source: "explicit",
             tags: ["teach"],
           }
-      this.instincts.upsertWithoutLock(instinct)
+      this.instincts.upsert(instinct)
     })
     this.logger.info(`Teach created ${id} weight=${instinct.explicitWeight}`)
     return { ok: true, instinct, message: `Learned: "${clean.slice(0, 80)}" (id=${id} score=${instinct.score.toFixed(1)})` }

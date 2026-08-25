@@ -1,6 +1,6 @@
 # Production Audit — better-opencode self-improving plugin
 
-**Audit Date:** 2026-05-13 | **Scope:** current checkout + build + tests | **Coverage:** 84.41% lines (72 passed, 19 files, branches 71.36%)
+**Audit Date:** 2026-05-13 | **Scope:** current checkout + build + tests | **Coverage at audit time:** 84.41% lines / 71.36% branches (`npm test`, 2026-05-13, 72 passed, 19 files; pre-refactor baseline)
 
 ## Production audit: 89/100, strong, no obvious launch blockers. CI locally green and live harness present; push to run remote CI.
 
@@ -20,7 +20,7 @@ System transform Qwen fix also landed: `hooks.ts:78-83` merges pending instincts
 - Three-tier propagation implemented and tested: T1 `stores/instinctsStore.ts` + `cacheStore.ts` sha256 + T2 `skillStore.ts` mirror + T3 library history/rollback.
 - Hybrid RAG with RRF k=60 + definition/file boosts (`hybridSearch.ts:30-99`) + token-budgeted `<retrieved>` (`contextInjector.ts:3-33`) and contentHash cache.
 - Guardrail `Guardrails.maxPerSession=5` enforced in `hooks.ts:125-145` and `curator/guardrails.ts:1-51` + `validateSkill` tested.
-- 84.95% line coverage passing thresholds (`vitest.config.ts:12-16`, actual 84.95% line, 73.03% branch, 72 tests).
+- 84.95% line coverage passing thresholds (`vitest.config.ts:12-16`; `npm test` 2026-05-13 post lock-fix run, 84.95% line / 73.03% branch, 72 tests). Figures above are labeled snapshots; later gate runs supersede them.
 
 ## Evidence checked
 - `package.json:1-47` scripts/build/typecheck/test, Node >=20

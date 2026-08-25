@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { tmpdir, homedir } from "node:os"
-import { createHash } from "node:crypto"
+import { tmpdir } from "node:os"
+import { getCacheDir, repoHashForRoot } from "./config.js"
 import { createLockFile, withFileLock, withFileLockSync, resolveLockOptions } from "./utils/lock.js"
 import { DriftDetector, depsDiff, computeDrift, needsReinterview } from "./quiz/driftDetector.js"
 import { scanRepo } from "./quiz/repoScanner.js"
@@ -68,8 +68,7 @@ describe("driftDetector paths", () => {
     const res = await dd.check(dir)
     expect(res.drifted).toBe(false)
     expect(res.currentHash).toBeDefined()
-    const fpHash = createHash("sha256").update(dir).digest("hex").slice(0, 12)
-    rmSync(join(homedir(), ".cache", "better-opencode", fpHash), { recursive: true, force: true })
+    rmSync(getCacheDir(repoHashForRoot(dir)), { recursive: true, force: true })
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -167,7 +166,8 @@ describe("vectorStore branches", () => {
     const vs = new MemoryVectorStore(new Logger(false))
     await vs.upsert([makeChunk("c1", "some long text content here", {})])
     const hits = await vs.search([1, 2, 3], 5)
-    expect(hits.length > 0 || vs.count() === 1).toBe(true)
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.chunk.id).toBe("c1")
     const empty = new MemoryVectorStore()
     await expect(empty.search([], 5)).resolves.toEqual([])
   })
@@ -193,10 +193,11 @@ describe("vectorStore branches", () => {
     await sq.upsert([makeChunk("s1", "text")])
     expect(sq.count()).toBe(1)
     expect((await sq.search([], 1)).length).toBe(1)
-    expect((await sq.bm25("text", 1)).length >= 0).toBe(true)
-    expect(sq.all().length === 1).toBe(true)
+    expect((await sq.bm25("text", 1)).length).toBe(1)
+    expect(sq.all()).toHaveLength(1)
     await sq.clear()
     expect(sq.count()).toBe(0)
+    expect(createVectorStore("sqlite-vec", log)).toBeInstanceOf(SqliteVecVectorStore)
     expect(createVectorStore("lancedb", log)).toBeInstanceOf(MemoryVectorStore)
     expect(createVectorStore("unknown-kind", log)).toBeInstanceOf(MemoryVectorStore)
   })

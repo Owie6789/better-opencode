@@ -87,6 +87,14 @@ export async function hybridSearch(
 }
 
 let crossEncoderWarned = false
+let crossEncoderStateCache: Promise<CrossEncoderState> | null = null
+
+type CrossEncoderState = "disabled" | "runtime-missing" | "model-missing" | "model-found" | "no-path"
+
+export function resetCrossEncoderStateForTests(): void {
+  crossEncoderStateCache = null
+  crossEncoderWarned = false
+}
 
 function warnCrossEncoderFallback(logger: Logger): void {
   if (crossEncoderWarned) return
@@ -94,7 +102,7 @@ function warnCrossEncoderFallback(logger: Logger): void {
   crossEncoderWarned = true
 }
 
-async function resolveCrossEncoderState(logger: Logger): Promise<"disabled" | "runtime-missing" | "model-missing" | "model-found" | "no-path"> {
+async function computeCrossEncoderState(logger: Logger): Promise<CrossEncoderState> {
   if (process.env.ENABLE_CROSS_ENCODER !== "1") return "disabled"
   const runtime = await import("onnxruntime-node").catch(() => null)
   if (!runtime) {
@@ -118,27 +126,9 @@ async function resolveCrossEncoderState(logger: Logger): Promise<"disabled" | "r
   return "model-found"
 }
 
-async function tryCrossEncoderRerank(
-  query: string,
-  candidates: Array<{ chunk: Chunk; score: number }>,
-  logger: Logger,
-): Promise<Array<{ chunk: Chunk; score: number }> | null> {
-  const state = await resolveCrossEncoderState(logger)
-  if (state === "disabled") return null
-  try {
-    const normalizedQuery = query.trim().toLowerCase()
-    if (normalizedQuery.length === 0) return null
-    logger.debug(`cross-encoder rerank stub active (heuristic fallback) queryLen=${normalizedQuery.length}`)
-    const firstTerm = normalizedQuery.split(/\s+/)[0] ?? ""
-    const boosted = candidates.map((c) => {
-      const textMatch = firstTerm.length > 0 && c.chunk.text.toLowerCase().includes(firstTerm) ? 0.04 : 0
-      return { ...c, score: c.score + textMatch + 0.01 }
-    })
-    boosted.sort((a, b) => b.score - a.score)
-    return boosted
-  } catch {
-    return null
-  }
+function resolveCrossEncoderState(logger: Logger): Promise<CrossEncoderState> {
+  if (!crossEncoderStateCache) crossEncoderStateCache = computeCrossEncoderState(logger)
+  return crossEncoderStateCache
 }
 
 async function rerank(
@@ -149,14 +139,20 @@ async function rerank(
 ): Promise<Array<{ chunk: Chunk; score: number }>> {
   if (candidates.length <= limit) return candidates
 
-  const ce = await tryCrossEncoderRerank(query, candidates, logger)
-  if (ce) return ce.slice(0, limit)
-
+  const state = await resolveCrossEncoderState(logger)
   const scored = candidates.map((c) => {
     const defBonus = c.chunk.kind === "definition" ? 0.02 : 0
     const lengthPenalty = c.chunk.text.length > 2000 ? -0.01 : 0
     const queryTermBonus = c.chunk.text.toLowerCase().includes(query.toLowerCase().split(/\s+/)[0] ?? "") ? 0.01 : 0
-    return { ...c, score: c.score + defBonus + lengthPenalty + queryTermBonus }
+    let extra = defBonus + lengthPenalty + queryTermBonus
+    if (state === "model-found") {
+      // Stub cross-encoder signal layered on top of the heuristic scores until
+      // a real reranker model ships. Model users keep heuristic ranking.
+      const firstTerm = query.trim().toLowerCase().split(/\s+/)[0] ?? ""
+      if (firstTerm.length > 0 && c.chunk.text.toLowerCase().includes(firstTerm)) extra += 0.04
+      extra += 0.01
+    }
+    return { ...c, score: c.score + extra }
   })
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, limit)

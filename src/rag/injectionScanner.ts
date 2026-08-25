@@ -1,15 +1,22 @@
-const SECRET_PATTERNS: RegExp[] = [
-  /(?:^|\W)(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/i, // NOSONAR - character class intentionally covers env-prefixed api keys (OPENAI_API_KEY) plus fallback
-  /aws_secret_access_key\s*[:=]\s*\S+/i, // NOSONAR - literal AWS key name
-  /aws.?secret.?access.?key\s*[:=]\s*\S+/i, // NOSONAR - flexible AWS key variant
-  /\bsecret\s*[:=]\s*\S{8,}/i,
-  /\b(?:password|passwd)\s*[:=]\s*\S{4,}/i,
-  /\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\b/, // NOSONAR - sk-proj hyphenated token intentionally duplicated class for readability
-  /ghp_[A-Za-z0-9]{10,}/, // NOSONAR - GitHub token prefix
-  /AKIA[0-9A-Z]{16}/,
-  /-----BEGIN (?:RSA )?PRIVATE KEY-----/,
-  /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/, // NOSONAR - RFC6750 bearer charset includes escaped slash for regex literal delimiter
+const SECRET_PATTERN_SOURCES: string[] = [
+  "(?<![A-Za-z0-9_])(?:[A-Za-z0-9]+_)?api[_-]?key\\s*[:=]\\s*\\S+",
+  "(?<![A-Za-z0-9_])aws.?secret.?access.?key\\s*[:=]\\s*\\S+",
+  "\\bsecret\\s*[:=]\\s*\\S{8,}",
+  "\\b(?:password|passwd)\\s*[:=]\\s*\\S{4,}",
+  "\\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\\b",
+  "ghp_[A-Za-z0-9]{10,}",
+  "AKIA[0-9A-Z]{16}",
+  "-----BEGIN (?:RSA )?PRIVATE KEY-----",
+  "Bearer\\s+[A-Za-z0-9\\-._~+/]+=*",
 ]
+
+function compile(flags: string): RegExp {
+  return new RegExp(SECRET_PATTERN_SOURCES.map((s) => `(${s})`).join("|"), flags)
+}
+
+// One compiled alternation per mode so scan and scrub can never drift apart.
+const SECRET_SCAN_RE = compile("i")
+const SECRET_SCRUB_RE = compile("gi")
 
 const INJECTION_PATTERNS: RegExp[] = [
   /ignore previous instructions/i,
@@ -25,11 +32,13 @@ export interface ScanResult {
 }
 
 export function scanForSecrets(text: string): ScanResult {
-  for (const re of SECRET_PATTERNS) {
-    const m = text.match(re)
-    if (m) return { safe: false, reason: "secret detected", matched: m[0].slice(0, 40) }
-  }
-  return { safe: true }
+  const m = text.match(SECRET_SCAN_RE)
+  if (!m) return { safe: true }
+  // Never echo the credential value back; keep only the identifier side of an
+  // assignment match and fully redact bare token matches.
+  const cut = m[0].search(/[:=]/)
+  const matched = cut >= 0 ? `${m[0].slice(0, cut + 1)} [REDACTED]` : "[REDACTED]"
+  return { safe: false, reason: "secret detected", matched }
 }
 
 export function scanForInjection(text: string): ScanResult {
@@ -48,23 +57,6 @@ export function scanSkillText(text: string): ScanResult {
   return { safe: true }
 }
 
-const SCRUB_PATTERNS: RegExp[] = [
-  /(?<![A-Za-z0-9_])(?:[A-Za-z0-9]+_)?api[_-]?key\s*[:=]\s*\S+/gi, // NOSONAR - lookbehind preserves delimiter
-  /(?<![A-Za-z0-9_])aws_secret_access_key\s*[:=]\s*\S+/gi, // NOSONAR
-  /(?<![A-Za-z0-9_])aws.?secret.?access.?key\s*[:=]\s*\S+/gi, // NOSONAR
-  /\bsecret\s*[:=]\s*\S{8,}/gi,
-  /\b(?:password|passwd)\s*[:=]\s*\S{4,}/gi,
-  /\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{16,}\b/gi, // NOSONAR
-  /ghp_[A-Za-z0-9]{10,}/gi, // NOSONAR
-  /AKIA[0-9A-Z]{16}/gi,
-  /-----BEGIN (?:RSA )?PRIVATE KEY-----/gi,
-  /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/gi, // NOSONAR
-]
-
 export function scrubSecrets(text: string): string {
-  let out = text
-  for (const re of SCRUB_PATTERNS) {
-    out = out.replace(re, "[REDACTED]")
-  }
-  return out
+  return text.replace(SECRET_SCRUB_RE, "[REDACTED]")
 }
