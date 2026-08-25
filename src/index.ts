@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs"
-import { join } from "node:path"
-import { getConfig } from "./config.js"
+import { copyFileSync, existsSync, readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { getConfig, getCacheDir, getInstinctsPath } from "./config.js"
+import { ensureDir } from "./utils/lock.js"
 import { InstinctsStore } from "./stores/instinctsStore.js"
 import { SkillStore } from "./stores/skillStore.js"
 import { CacheStore } from "./stores/cacheStore.js"
@@ -11,7 +12,7 @@ import { Guardrails } from "./curator/guardrails.js"
 import { PromotionService } from "./curator/promotionService.js"
 import { createVectorStore } from "./rag/vectorStore.js"
 import { HybridEmbedder } from "./rag/embedder.js"
-import { IndexService } from "./rag/indexer.js"
+import { IndexService, cacheDirForRepo } from "./rag/indexer.js"
 import { createHooks } from "./hooks.js"
 import { TeachCommand } from "./commands/teach.js"
 import { SelfImproveCommand } from "./commands/selfImprove.js"
@@ -35,7 +36,19 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
   const debug = process.env.BETTER_OPENCODE_DEBUG === "true"
   const logger = new Logger(debug)
 
-  const instincts = new InstinctsStore(undefined, logger, config.maxInstincts)
+  const instinctsPath = getInstinctsPath(projectRoot)
+  const legacyPath = join(getCacheDir(), "instincts.json")
+  if (projectRoot && !existsSync(instinctsPath) && existsSync(legacyPath) && instinctsPath !== legacyPath) {
+    try {
+      ensureDir(dirname(instinctsPath))
+      copyFileSync(legacyPath, instinctsPath)
+      logger.info(`migrated legacy instincts to ${instinctsPath}`)
+    } catch (err) {
+      logger.warn("legacy instincts migration failed", err)
+    }
+  }
+
+  const instincts = new InstinctsStore(instinctsPath, logger, config.maxInstincts)
   const skills = new SkillStore(projectRoot, logger)
   const cache = new CacheStore(undefined, logger)
   const session = new SessionState(`sess-${Date.now()}`, null)
@@ -49,14 +62,22 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
   const promotion = new PromotionService(skills, guardrails, logger)
 
   const embedder = new HybridEmbedder(config.adaptiveCompute, logger)
-  const vectorStoreRaw = createVectorStore(config.vectorStore, logger)
-  const vectorStore = vectorStoreRaw as unknown as import("./rag/vectorStore.js").MemoryVectorStore
+  const vectorStore = createVectorStore(config.vectorStore, logger)
 
   let indexer: IndexService | undefined
   try {
     indexer = new IndexService({ repoRoot: projectRoot, embedder, vectorStore, cacheStore: cache }, logger)
-    const shouldIndex = !existsSync(join(projectRoot, ".cache", "better-opencode"))
-    if (shouldIndex) {
+    const marker = join(cacheDirForRepo(projectRoot), ".indexed")
+    let fresh = false
+    if (existsSync(marker)) {
+      try {
+        const age = Date.now() - Date.parse(readFileSync(marker, "utf8").trim())
+        fresh = Number.isFinite(age) && age < 7 * 24 * 60 * 60 * 1000
+      } catch {
+        fresh = false
+      }
+    }
+    if (!fresh) {
       indexer.index().catch((err) => logger.warn("initial index failed", err))
     }
   } catch (err) {
@@ -64,7 +85,7 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
   }
 
   const teachCmd = new TeachCommand(instincts, logger)
-  const selfImproveCmd = new SelfImproveCommand(instincts, skills, ledger, session, cache, logger, projectRoot)
+  const selfImproveCmd = new SelfImproveCommand(instincts, skills, ledger, session, cache, logger, projectRoot, vectorStore)
 
   const deps = {
     config,
@@ -98,7 +119,7 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
       },
     },
     "self-improve": {
-      description: "Self-improve commands: status | history <slug> | rollback <slug> [ts] | tune",
+      description: "Self-improve commands: status | history <slug> | rollback <slug> [ts] | tune | health",
       parameters: {
         type: "object",
         properties: {
@@ -109,9 +130,6 @@ export default async function createPlugin(ctx?: PluginContext): Promise<Plugin>
         required: ["subcommand"],
       },
       async execute(args: { subcommand: string; slug?: string; version?: string }): Promise<string> {
-        if (args.subcommand === "health") {
-          return JSON.stringify(selfImproveCmd.health(), null, 2)
-        }
         return selfImproveCmd.execute(args.subcommand as never, { slug: args.slug ?? "", version: args.version ?? "" })
       },
     },

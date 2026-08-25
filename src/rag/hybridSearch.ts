@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import type { Chunk } from "../types.js"
 import type { VectorStore } from "./vectorStore.js"
 import type { Embedder } from "./embedder.js"
@@ -85,19 +86,73 @@ export async function hybridSearch(
   return reranked
 }
 
+let crossEncoderWarned = false
+let crossEncoderStateCache: Promise<CrossEncoderState> | null = null
+
+type CrossEncoderState = "disabled" | "runtime-missing" | "model-missing" | "model-found" | "no-path"
+
+export function resetCrossEncoderStateForTests(): void {
+  crossEncoderStateCache = null
+  crossEncoderWarned = false
+}
+
+function warnCrossEncoderFallback(logger: Logger): void {
+  if (crossEncoderWarned) return
+  logger.warn("cross-encoder requested but model not found, using heuristic fallback")
+  crossEncoderWarned = true
+}
+
+async function computeCrossEncoderState(logger: Logger): Promise<CrossEncoderState> {
+  if (process.env.ENABLE_CROSS_ENCODER !== "1") return "disabled"
+  const runtime = await import("onnxruntime-node").catch(() => null)
+  if (!runtime) {
+    warnCrossEncoderFallback(logger)
+    return "runtime-missing"
+  }
+  const modelPath = process.env.CROSS_ENCODER_MODEL_PATH
+  if (!modelPath) {
+    warnCrossEncoderFallback(logger)
+    return "no-path"
+  }
+  let modelFound = false
+  try {
+    modelFound = existsSync(modelPath)
+  } catch {}
+  if (!modelFound) {
+    warnCrossEncoderFallback(logger)
+    return "model-missing"
+  }
+  logger.debug(`cross-encoder model found at ${modelPath} but heuristic fallback in use (stub)`)
+  return "model-found"
+}
+
+function resolveCrossEncoderState(logger: Logger): Promise<CrossEncoderState> {
+  if (!crossEncoderStateCache) crossEncoderStateCache = computeCrossEncoderState(logger)
+  return crossEncoderStateCache
+}
+
 async function rerank(
-  _query: string,
+  query: string,
   candidates: Array<{ chunk: Chunk; score: number }>,
   limit: number,
   logger: Logger,
 ): Promise<Array<{ chunk: Chunk; score: number }>> {
-  void logger
   if (candidates.length <= limit) return candidates
 
+  const state = await resolveCrossEncoderState(logger)
   const scored = candidates.map((c) => {
     const defBonus = c.chunk.kind === "definition" ? 0.02 : 0
     const lengthPenalty = c.chunk.text.length > 2000 ? -0.01 : 0
-    return { ...c, score: c.score + defBonus + lengthPenalty }
+    const queryTermBonus = c.chunk.text.toLowerCase().includes(query.toLowerCase().split(/\s+/)[0] ?? "") ? 0.01 : 0
+    let extra = defBonus + lengthPenalty + queryTermBonus
+    if (state === "model-found") {
+      // Stub cross-encoder signal layered on top of the heuristic scores until
+      // a real reranker model ships. Model users keep heuristic ranking.
+      const firstTerm = query.trim().toLowerCase().split(/\s+/)[0] ?? ""
+      if (firstTerm.length > 0 && c.chunk.text.toLowerCase().includes(firstTerm)) extra += 0.04
+      extra += 0.01
+    }
+    return { ...c, score: c.score + extra }
   })
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, limit)

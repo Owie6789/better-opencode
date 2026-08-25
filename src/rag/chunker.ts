@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto"
 import type { Chunk } from "../types.js"
+import { createHash } from "node:crypto"
 
 const CHUNKER_VERSION = "v1-tree-regex-fallback"
 
@@ -60,9 +60,10 @@ function extractSymbols(content: string, language: string): Array<{ symbol: stri
     let m: RegExpExecArray | null
     const clone = new RegExp(re.source, re.flags)
     while ((m = clone.exec(content)) !== null) {
-      const sym = m[1] ?? "unknown"
       const idx = m.index
       const lineStart = content.slice(0, idx).split("\n").length
+      const rawSym = m[1]
+      const sym = rawSym && rawSym.trim().length > 0 ? rawSym : `chunk_${lineStart}`
       const snippetStart = Math.max(0, idx - 200)
       const snippetEnd = Math.min(content.length, idx + 800)
       const text = content.slice(snippetStart, snippetEnd).trim().slice(0, 1200)
@@ -176,10 +177,6 @@ export function getChunkerVersion(): string {
 
 export const chunkText = chunkFile
 
-export function tryTreeSitterChunk(file: string, content: string): Chunk[] | null {
-  try {
-    return chunkFile(file, content)
-  } catch {
-    return null
-  }
+export async function tryTreeSitterChunk(file: string, content: string): Promise<Chunk[]> {
+  return chunkFile(file, content)
 }

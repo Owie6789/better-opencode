@@ -9,3 +9,6 @@ coverage/
 .DS_Store
 .cache/better-opencode/
 better-opencode-cache.json
+.opencode/
+!opencode.json
+!opencode.json.example

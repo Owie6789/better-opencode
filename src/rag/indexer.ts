@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { homedir } from "node:os"
 import { glob } from "glob"
 import { chunkFile, getChunkerVersion } from "./chunker.js"
 import type { Chunk } from "../types.js"
@@ -8,6 +7,7 @@ import type { Embedder } from "./embedder.js"
 import type { VectorStore } from "./vectorStore.js"
 import { CacheStore } from "../stores/cacheStore.js"
 import { contentHash, repoHash } from "../utils/hash.js"
+import { getCacheDir } from "../config.js"
 import { Logger } from "../utils/logger.js"
 
 export interface IndexerOpts {
@@ -16,6 +16,10 @@ export interface IndexerOpts {
   vectorStore: VectorStore
   cacheStore?: CacheStore
   batchSize?: number
+}
+
+export function cacheDirForRepo(repoRoot: string): string {
+  return join(getCacheDir(), "index", repoHash([repoRoot]))
 }
 
 export class IndexService {
@@ -37,7 +41,7 @@ export class IndexService {
       ignore: ["node_modules/**", ".git/**", "dist/**", ".agents/**", ".claude/**", "coverage/**", ".cache/**"],
     })
 
-    const rHash = repoHash(files)
+    const rHash = repoHash([repoRoot])
     let indexed = 0
     let skipped = 0
     const allChunks: Chunk[] = []
@@ -59,8 +63,9 @@ export class IndexService {
       if (content.length > 500_000) content = content.slice(0, 500_000)
 
       const hash = contentHash(content, this.chunkerVersion, embedder.model)
-      if (cacheStore?.has(hash)) {
-        const cached = cacheStore.get<Chunk[]>(hash)
+      const cacheKey = `${rHash.slice(0, 8)}:${hash}`
+      if (cacheStore?.has(cacheKey)) {
+        const cached = cacheStore.get<Chunk[]>(cacheKey)
         if (cached && cached.length > 0) {
           allChunks.push(...cached)
           skipped++
@@ -73,7 +78,7 @@ export class IndexService {
         skipped++
         continue
       }
-      if (cacheStore) cacheStore.set(hash, chunks)
+      if (cacheStore) cacheStore.set(cacheKey, chunks)
       allChunks.push(...chunks)
       indexed++
     }
@@ -92,8 +97,19 @@ export class IndexService {
     }
 
     await vectorStore.upsert(allChunks)
+    this.markIndexed(repoRoot)
     this.logger.info(`Indexed ${indexed} files, ${allChunks.length} chunks (skipped ${skipped}) hash=${rHash.slice(0, 8)}`)
     return { indexed, skipped, chunks: allChunks.length, repoHash: rHash }
+  }
+
+  private markIndexed(repoRoot: string): void {
+    try {
+      const dir = cacheDirForRepo(repoRoot)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, ".indexed"), new Date().toISOString(), "utf8")
+    } catch (err) {
+      this.logger.warn("failed to write index marker", err)
+    }
   }
 
   async updateFile(repoRoot: string, relPath: string): Promise<number> {
@@ -108,10 +124,5 @@ export class IndexService {
     })
     await this.opts.vectorStore.upsert(chunks)
     return chunks.length
-  }
-
-  cacheDirForRepo(repoRoot: string): string {
-    const hash = repoHash([repoRoot])
-    return join(homedir(), ".cache", "better-opencode", hash)
   }
 }

@@ -39,8 +39,28 @@ export class Evolver {
     const ledger = session.getLedger()
     if (ledger.length < 3) return []
 
-    const errorFixPairs = session.getErrorFixPairs()
+    try {
+      return this.instincts.mutate(() => {
+        const candidates = this.collectCandidates(session, ledger)
+        const persisted: Instinct[] = []
+        for (const inst of candidates) {
+          const { score } = this.evaluate(inst)
+          const scored: Instinct = { ...inst, score, confidence: score }
+          this.instincts.upsert(scored)
+          persisted.push(scored)
+          this.logger.info(`Curated instinct ${scored.id} score=${score.toFixed(2)} "${scored.text.slice(0, 60)}"`)
+        }
+        return persisted.filter((i) => this.evaluate(i).promote)
+      })
+    } catch (err) {
+      this.logger.warn("Curate skipped", err)
+      return []
+    }
+  }
+
+  private collectCandidates(session: SessionState, ledger: { tool: string }[]): Instinct[] {
     const candidates: Instinct[] = []
+    const errorFixPairs = session.getErrorFixPairs()
 
     if (errorFixPairs.length > 0) {
       for (const pair of errorFixPairs.slice(-3)) {
@@ -100,16 +120,12 @@ export class Evolver {
       }
     }
 
-    const toPersist: Instinct[] = []
-    for (const inst of candidates) {
-      const { score } = this.evaluate(inst)
-      const scored: Instinct = { ...inst, score, confidence: score }
-      this.instincts.upsert(scored)
-      toPersist.push(scored)
-      this.logger.info(`Curated instinct ${scored.id} score=${score.toFixed(2)} "${scored.text.slice(0, 60)}"`)
-    }
+    return candidates
+  }
 
-    return toPersist.filter((i) => this.evaluate(i).promote)
+  async curateAsync(session: SessionState): Promise<Instinct[]> {
+    if (session.getLedger().length < 3) return []
+    return this.curate(session)
   }
 
   private synthesizeErrorFix(pair: { errorMessage: string; errorTool: string; fixTool: string; fixFile?: string }): string | null {

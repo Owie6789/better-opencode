@@ -31,7 +31,7 @@ function bm25Score(queryTokens: string[], docTokens: string[], avgLen: number, d
 
 export class MemoryVectorStore implements VectorStore {
   private chunks: Chunk[] = []
-  private logger: Logger
+  private readonly logger: Logger
 
   constructor(logger: Logger = new Logger(false)) {
     this.logger = logger
@@ -86,8 +86,7 @@ export class MemoryVectorStore implements VectorStore {
       const score = bm25Score(queryTokens, tokens, avgLen, tokens.length, idf)
       const boosted = chunk.kind === "definition" ? score * 1.3 : score
       const fileBoost = chunk.file.includes(query.split(/\s+/)[0] ?? "") ? boosted * 1.1 : boosted
-      void fileBoost
-      return { chunk, score: boosted }
+      return { chunk, score: fileBoost }
     })
 
     scored.sort((a, b) => b.score - a.score)
@@ -107,17 +106,39 @@ export class MemoryVectorStore implements VectorStore {
   }
 }
 
-let sqliteVecAvailable: boolean | null = null
-function checkSqliteVec(): boolean {
-  if (sqliteVecAvailable !== null) return sqliteVecAvailable
-  sqliteVecAvailable = false
-  return sqliteVecAvailable
+export class SqliteVecVectorStore implements VectorStore {
+  private readonly mem = new MemoryVectorStore()
+  private readonly logger: Logger
+  constructor(
+    private readonly dbPath: string,
+    logger: Logger = new Logger(false),
+  ) {
+    this.logger = logger
+    this.logger.warn(`SqliteVecVectorStore ${dbPath}: persistence not yet wired, delegating to in-memory (fallback)`)
+  }
+  async upsert(chunks: Chunk[]): Promise<void> {
+    await this.mem.upsert(chunks)
+  }
+  async search(queryEmbedding: number[], k: number): Promise<Array<{ chunk: Chunk; score: number }>> {
+    return this.mem.search(queryEmbedding, k)
+  }
+  async bm25(query: string, k: number): Promise<Array<{ chunk: Chunk; score: number }>> {
+    return this.mem.bm25(query, k)
+  }
+  count(): number {
+    return this.mem.count()
+  }
+  async clear(): Promise<void> {
+    await this.mem.clear()
+  }
+  all(): Chunk[] {
+    return this.mem.all()
+  }
 }
 
-export function createVectorStore(kind: string, logger?: Logger): VectorStore {
-  if (kind === "sqlite-vec" && checkSqliteVec()) {
-    logger?.info("sqlite-vec requested but using MemoryVectorStore for portability")
-    return new MemoryVectorStore(logger)
+export function createVectorStore(kind: string, logger?: Logger, opts?: { dbPath?: string }): VectorStore {
+  if (kind === "sqlite-vec") {
+    return new SqliteVecVectorStore(opts?.dbPath ?? ":memory:", logger)
   }
   if (kind === "lancedb") {
     logger?.info("lancedb not yet wired, using MemoryVectorStore")

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { homedir } from "node:os"
+import { createHash } from "node:crypto"
 import { ConfigSchema, type PluginConfig } from "./types.js"
 
 const DEFAULTS: PluginConfig = ConfigSchema.parse({})
@@ -68,8 +69,14 @@ export function getCacheDir(repoHash?: string): string {
   return base
 }
 
-export function getInstinctsPath(): string {
-  return join(getCacheDir(), "instincts.json")
+export function repoHashForRoot(projectRoot: string): string {
+  const root = resolve(projectRoot)
+  return createHash("sha256").update(root, "utf8").digest("hex").slice(0, 12)
+}
+
+export function getInstinctsPath(projectRoot?: string): string {
+  if (!projectRoot) return join(getCacheDir(), "instincts.json")
+  return join(getCacheDir(repoHashForRoot(projectRoot)), "instincts.json")
 }
 
 export function getSkillsLibraryDir(): string {

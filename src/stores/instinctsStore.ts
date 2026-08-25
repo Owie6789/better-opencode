@@ -1,14 +1,21 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { homedir } from "node:os"
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync, unlinkSync } from "node:fs"
+import { dirname } from "node:path"
+import { randomBytes } from "node:crypto"
 import { type Instinct, InstinctSchema } from "../types.js"
 import { Logger } from "../utils/logger.js"
+import { withFileLockSync } from "../utils/lock.js"
+import { getInstinctsPath } from "../config.js"
 
 const MAX_CHARS_SNAPSHOT = 2200
 const MAX_CHARS_WORKING = 1375
 
-function instinctsPath(): string {
-  return join(homedir(), ".cache", "better-opencode", "instincts.json")
+// A mutate callback can include disk read, JSON parse, mutation, serialize and
+// fsync; the lease must outlive all of it or another process could claim the
+// stale lock mid-callback.
+const MUTATE_LEASE_MS = 60_000
+
+export function instinctsPathForRepo(repoRoot: string): string {
+  return getInstinctsPath(repoRoot)
 }
 
 function ensureDirFor(file: string): void {
@@ -21,10 +28,19 @@ export class InstinctsStore {
   private loaded = false
 
   constructor(
-    private readonly filePath: string = instinctsPath(),
+    private readonly filePath: string = getInstinctsPath(),
     private readonly logger: Logger = new Logger(false),
     private readonly maxInstincts = 200,
   ) {}
+
+  get lockPath(): string {
+    return `${this.filePath}.lock`
+  }
+
+  reload(): void {
+    this.loaded = false
+    this.load()
+  }
 
   load(): Instinct[] {
     if (this.loaded) return [...this.instincts]
@@ -53,12 +69,96 @@ export class InstinctsStore {
     }
   }
 
-  save(): void {
+  private fsyncFile(path: string): void {
+    try {
+      const fd = openSync(path, "r")
+      try {
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      const isWindows = process.platform === "win32"
+      const tolerated = isWindows || e.code === "EPERM" || e.code === "EINVAL" || e.code === "ENOSYS"
+      if (!tolerated) throw err
+      this.logger.warn("file fsync not supported on this platform, continuing without fsync")
+    }
+  }
+
+  private fsyncDir(dir: string): void {
+    try {
+      const dirFd = openSync(dir, "r")
+      try {
+        fsyncSync(dirFd)
+      } finally {
+        closeSync(dirFd)
+      }
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      const isWindows = process.platform === "win32"
+      const tolerated = isWindows || e.code === "EINVAL" || e.code === "EPERM" || e.code === "ENOSYS"
+      if (!tolerated) throw err
+      this.logger.warn("directory fsync not supported on this platform, durability reduced to file fsync only")
+    }
+  }
+
+  private saveInternal(): void {
     ensureDirFor(this.filePath)
     const data = JSON.stringify(this.instincts, null, 2)
-    const tmp = `${this.filePath}.tmp`
+    const nonce = randomBytes(3).toString("hex")
+    const tmp = `${this.filePath}.${process.pid}.${Date.now()}.${nonce}.tmp`
     writeFileSync(tmp, data, "utf8")
-    writeFileSync(this.filePath, data, "utf8")
+    try {
+      this.fsyncFile(tmp)
+    } catch (err) {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp)
+      } catch {}
+      throw err
+    }
+    try {
+      renameSync(tmp, this.filePath)
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      if (e.code !== "ENOENT") throw err
+      mkdirSync(dirname(this.filePath), { recursive: true })
+      renameSync(tmp, this.filePath)
+    } finally {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp)
+      } catch {}
+    }
+    this.fsyncDir(dirname(this.filePath))
+  }
+
+  save(): void {
+    withFileLockSync(this.lockPath, () => {
+      const pending = [...this.instincts]
+      this.reload()
+      const byId = new Map(this.instincts.map((i) => [i.id, i]))
+      for (const p of pending) byId.set(p.id, p)
+      this.instincts = [...byId.values()]
+      this.enforceCap()
+      this.saveInternal()
+    })
+  }
+
+  mutate<T>(fn: () => T): T {
+    return withFileLockSync(
+      this.lockPath,
+      () => {
+        this.reload()
+        try {
+          return fn()
+        } catch (err) {
+          this.loaded = false
+          this.instincts = []
+          throw err
+        }
+      },
+      { staleMs: MUTATE_LEASE_MS },
+    )
   }
 
   all(): Instinct[] {
@@ -67,12 +167,13 @@ export class InstinctsStore {
 
   add(instinct: Instinct): void {
     const parsed = InstinctSchema.parse(instinct)
-    this.load()
-    const idx = this.instincts.findIndex((i) => i.id === parsed.id)
-    if (idx >= 0) this.instincts[idx] = parsed
-    else this.instincts.push(parsed)
-    this.enforceCap()
-    this.save()
+    this.mutate(() => {
+      const idx = this.instincts.findIndex((i) => i.id === parsed.id)
+      if (idx >= 0) this.instincts[idx] = parsed
+      else this.instincts.push(parsed)
+      this.enforceCap()
+      this.saveInternal()
+    })
   }
 
   upsert(instinct: Instinct): void {
@@ -80,14 +181,16 @@ export class InstinctsStore {
   }
 
   remove(id: string): boolean {
-    this.load()
-    const before = this.instincts.length
-    this.instincts = this.instincts.filter((i) => i.id !== id)
-    if (this.instincts.length !== before) {
-      this.save()
-      return true
-    }
-    return false
+    let removed = false
+    this.mutate(() => {
+      const before = this.instincts.length
+      this.instincts = this.instincts.filter((i) => i.id !== id)
+      if (this.instincts.length !== before) {
+        this.saveInternal()
+        removed = true
+      }
+    })
+    return removed
   }
 
   findById(id: string): Instinct | undefined {
@@ -149,21 +252,23 @@ export class InstinctsStore {
   }
 
   gc(ttlDaysDefault = 14): Instinct[] {
-    this.load()
-    const now = Date.now()
-    const before = this.instincts.length
-    const evicted: Instinct[] = []
-    this.instincts = this.instincts.filter((inst) => {
-      const ageDays = (now - inst.updatedAt) / (1000 * 60 * 60 * 24)
-      const ttl = inst.ttlDays || ttlDaysDefault
-      const isExpired = ageDays > ttl && this.decayedScore(inst) < 0.5
-      if (isExpired) evicted.push(inst)
-      return !isExpired
+    let evicted: Instinct[] = []
+    this.mutate(() => {
+      const now = Date.now()
+      const before = this.instincts.length
+      evicted = []
+      this.instincts = this.instincts.filter((inst) => {
+        const ageDays = (now - inst.updatedAt) / (1000 * 60 * 60 * 24)
+        const ttl = inst.ttlDays || ttlDaysDefault
+        const isExpired = ageDays > ttl && this.decayedScore(inst) < 0.5
+        if (isExpired) evicted.push(inst)
+        return !isExpired
+      })
+      if (evicted.length > 0) this.saveInternal()
+      if (before !== this.instincts.length) {
+        this.logger.info(`GC evicted ${evicted.length} instincts`)
+      }
     })
-    if (evicted.length > 0) this.save()
-    if (before !== this.instincts.length) {
-      this.logger.info(`GC evicted ${evicted.length} instincts`)
-    }
     return evicted
   }
 
@@ -172,7 +277,9 @@ export class InstinctsStore {
   }
 
   clear(): void {
-    this.instincts = []
-    this.save()
+    this.mutate(() => {
+      this.instincts = []
+      this.saveInternal()
+    })
   }
 }

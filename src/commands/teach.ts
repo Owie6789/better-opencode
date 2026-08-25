@@ -27,37 +27,38 @@ export class TeachCommand {
     const id = createHash("sha256").update(clean).digest("hex").slice(0, 12)
     const now = Date.now()
 
-    const existing = this.instincts.findById(id)
-
-    const instinct: Instinct = existing
-      ? {
-          ...existing,
-          text: clean,
-          hits: existing.hits + 1,
-          successRate: Math.min(1, existing.successRate + 0.05),
-          explicitWeight: Math.min(10, existing.explicitWeight + 3),
-          updatedAt: now,
-          score: existing.score + 3,
-          confidence: Math.min(10, existing.confidence + 1),
-        }
-      : {
-          id,
-          text: clean,
-          score: 6,
-          confidence: 7,
-          hits: 1,
-          successRate: 0.9,
-          tokenDelta: 0,
-          toolCallsDelta: 0,
-          explicitWeight: 3,
-          createdAt: now,
-          updatedAt: now,
-          ttlDays: 30,
-          source: "explicit",
-          tags: ["teach"],
-        }
-
-    this.instincts.upsert(instinct)
+    let instinct!: Instinct
+    this.instincts.mutate(() => {
+      const existing = this.instincts.findById(id)
+      instinct = existing
+        ? {
+            ...existing,
+            text: clean,
+            hits: existing.hits + 1,
+            successRate: Math.min(1, existing.successRate + 0.05),
+            explicitWeight: Math.min(10, existing.explicitWeight + 3),
+            updatedAt: now,
+            score: existing.score + 3,
+            confidence: Math.min(10, existing.confidence + 1),
+          }
+        : {
+            id,
+            text: clean,
+            score: 6,
+            confidence: 7,
+            hits: 1,
+            successRate: 0.9,
+            tokenDelta: 0,
+            toolCallsDelta: 0,
+            explicitWeight: 3,
+            createdAt: now,
+            updatedAt: now,
+            ttlDays: 30,
+            source: "explicit",
+            tags: ["teach"],
+          }
+      this.instincts.upsert(instinct)
+    })
     this.logger.info(`Teach created ${id} weight=${instinct.explicitWeight}`)
     return { ok: true, instinct, message: `Learned: "${clean.slice(0, 80)}" (id=${id} score=${instinct.score.toFixed(1)})` }
   }
